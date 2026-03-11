@@ -1,34 +1,132 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
-}
-
-.App-header {
-    background-color: #0f0f10;
+/* App-specific styles */
+.App {
     min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+    min-height: 100dvh;
 }
 
-.App-link {
-    color: #61dafb;
+/* PWA Status bar safe area */
+@supports (padding-top: env(safe-area-inset-top)) {
+    .safe-area-top {
+        padding-top: env(safe-area-inset-top);
+    }
+    
+    .safe-area-bottom {
+        padding-bottom: env(safe-area-inset-bottom);
+    }
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
+/* Smooth scrolling on iOS */
+.scroll-smooth {
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Touch feedback */
+.touch-feedback:active {
+    transform: scale(0.98);
+    transition: transform 0.1s ease-out;
+}
+
+/* Card animations */
+.card-enter {
+    opacity: 0;
+    transform: translateY(10px);
+}
+
+.card-enter-active {
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
+
+/* Scan animation keyframes */
+@keyframes scan-line {
+    0%, 100% {
+        top: 0;
+        opacity: 0.3;
     }
-    to {
-        transform: rotate(360deg);
+    50% {
+        top: 100%;
+        opacity: 1;
     }
+}
+
+.scan-line {
+    animation: scan-line 2s ease-in-out infinite;
+}
+
+/* Upload zone drag active */
+.upload-zone-dragging {
+    border-color: hsl(var(--accent));
+    background-color: hsl(var(--accent) / 0.05);
+}
+
+/* Confidence score colors */
+.score-high {
+    color: hsl(160 84% 39%);
+}
+
+.score-medium {
+    color: hsl(43 96% 56%);
+}
+
+.score-low {
+    color: hsl(0 84% 60%);
+}
+
+/* Mobile optimizations */
+@media (max-width: 640px) {
+    /* Larger touch targets on mobile */
+    button, a, [role="button"] {
+        min-height: 44px;
+    }
+    
+    /* Better text readability */
+    body {
+        font-size: 16px; /* Prevents iOS zoom on input focus */
+    }
+    
+    input, select, textarea {
+        font-size: 16px !important;
+    }
+}
+
+/* Hide scrollbar on iOS while keeping functionality */
+.hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
+/* Bottom navigation spacing */
+.pb-nav {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Modal backdrop blur */
+.backdrop-blur-modal {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+/* Prevent text selection on UI elements */
+.no-select {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* Loading skeleton pulse */
+@keyframes skeleton-pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.skeleton-pulse {
+    animation: skeleton-pulse 2s ease-in-out infinite;
 }
