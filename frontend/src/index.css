@@ -191,3 +191,10 @@
         gap: inherit;
     }
 }
+
+/* Fix Emergent badge z-index to not block bottom navigation */
+#emergent-badge,
+[class*="emergent"],
+div[style*="Made with Emergent"] {
+    z-index: 40 !important;
+}
