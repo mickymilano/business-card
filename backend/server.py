@@ -304,8 +304,15 @@ async def extract_business_card_data(image_base64: str, image_back_base64: Optio
             "validation_status": "error"
         }
     except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        raise HTTPException(status_code=500, detail=f"AI extraction failed: {str(e)}")
+        error_msg = str(e)
+        logger.error(f"Claude API error: {error_msg}")
+        # Check for specific error types
+        if "exceeds" in error_msg and "MB" in error_msg:
+            raise HTTPException(status_code=400, detail="Image too large. Please use a smaller image (max 5MB).")
+        elif "invalid_request_error" in error_msg:
+            raise HTTPException(status_code=400, detail="Invalid image format. Please use JPEG or PNG.")
+        else:
+            raise HTTPException(status_code=500, detail=f"AI extraction failed: {error_msg}")
 
 async def validate_contact_data(contact_data: Dict[str, Any]) -> Dict[str, Any]:
     """Validate extracted contact data using Claude"""

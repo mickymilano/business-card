@@ -9,6 +9,69 @@ import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Camera, Upload, Image, X, Loader2, Check, AlertCircle } from "lucide-react";
 
+// Compress image to max 4MB (Claude limit is 5MB, we use 4MB for safety)
+const compressImage = (file, maxSizeMB = 4) => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+        
+        // Calculate max dimensions to reduce file size
+        const maxDimension = 2000; // Max 2000px on any side
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Try different quality levels to get under maxSizeMB
+        let quality = 0.85;
+        let base64 = canvas.toDataURL("image/jpeg", quality);
+        
+        // If still too large, reduce quality
+        while (base64.length > maxSizeMB * 1024 * 1024 * 1.37 && quality > 0.3) {
+          quality -= 0.1;
+          base64 = canvas.toDataURL("image/jpeg", quality);
+        }
+        
+        // If still too large, reduce dimensions further
+        if (base64.length > maxSizeMB * 1024 * 1024 * 1.37) {
+          const scale = 0.7;
+          canvas.width = Math.round(width * scale);
+          canvas.height = Math.round(height * scale);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          base64 = canvas.toDataURL("image/jpeg", 0.8);
+        }
+        
+        const compressedBase64 = base64.split(",")[1];
+        const sizeKB = Math.round(compressedBase64.length * 0.75 / 1024);
+        console.log(`Image compressed: ${img.width}x${img.height} -> ${canvas.width}x${canvas.height}, ~${sizeKB}KB`);
+        
+        resolve({
+          base64: compressedBase64,
+          preview: base64
+        });
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
 const ScanPage = () => {
   const navigate = useNavigate();
   const { currentProject } = useApp();
@@ -20,6 +83,7 @@ const ScanPage = () => {
   const [hasBack, setHasBack] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
+  const [compressing, setCompressing] = useState(false);
 
   if (!currentProject) {
     return (
@@ -35,7 +99,7 @@ const ScanPage = () => {
     );
   }
 
-  const handleFileSelect = (e, side) => {
+  const handleFileSelect = async (e, side) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -44,16 +108,23 @@ const ScanPage = () => {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const base64 = event.target.result.split(",")[1];
+    setCompressing(true);
+    toast.info("Optimizing image...");
+
+    try {
+      const compressed = await compressImage(file);
       if (side === "front") {
-        setFrontImage({ file, base64, preview: event.target.result });
+        setFrontImage({ file, base64: compressed.base64, preview: compressed.preview });
       } else {
-        setBackImage({ file, base64, preview: event.target.result });
+        setBackImage({ file, base64: compressed.base64, preview: compressed.preview });
       }
-    };
-    reader.readAsDataURL(file);
+      toast.success("Image ready");
+    } catch (error) {
+      console.error("Compression error:", error);
+      toast.error("Failed to process image");
+    } finally {
+      setCompressing(false);
+    }
   };
 
   const clearImage = (side) => {
@@ -92,10 +163,19 @@ const ScanPage = () => {
         toast.success("Card scanned successfully!");
       } else {
         const error = await res.json();
-        toast.error(error.detail || "Scan failed");
+        const errorMsg = error.detail || "Scan failed";
+        // Check for specific error types
+        if (errorMsg.includes("exceeds") || errorMsg.includes("size")) {
+          toast.error("Image too large. Please try a smaller image.");
+        } else if (errorMsg.includes("API key") || errorMsg.includes("key")) {
+          toast.error("API key issue. Check Settings.");
+        } else {
+          toast.error(errorMsg);
+        }
       }
     } catch (e) {
-      toast.error("Failed to scan card. Please check your connection.");
+      console.error("Scan error:", e);
+      toast.error("Failed to scan card. Please try again.");
     } finally {
       setScanning(false);
     }
