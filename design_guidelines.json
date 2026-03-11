@@ -1,0 +1,158 @@
+{
+  "project_name": "BizScan_Pro_PWA",
+  "design_philosophy": {
+    "persona": "E1: The Anti-AI Designer",
+    "core_principles": [
+      "Fusion over Imitation: Swiss Typographic precision meets Tactile Materiality.",
+      "Emotion First: The app should feel 'Efficient' and 'Sharp' - like a well-tailored suit.",
+      "Content is King: Data clarity is paramount. Verification is the hero action.",
+      "Zoom In: Use focus modes for data review to prevent cognitive overload."
+    ],
+    "archetype": "The Performance Pro (Swiss Variant)",
+    "theme_strategy": "Smart Hybrid (Light Mode default for legibility, Dark Mode for low-light environments)"
+  },
+  "typography": {
+    "font_family": {
+      "headings": "Manrope, sans-serif",
+      "body": "Inter, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "scaling": {
+      "h1": "text-4xl md:text-5xl font-bold tracking-tight",
+      "h2": "text-3xl font-semibold tracking-tight",
+      "h3": "text-2xl font-medium",
+      "body_lg": "text-lg leading-relaxed",
+      "body_base": "text-base leading-relaxed text-muted-foreground",
+      "caption": "text-sm font-medium text-muted-foreground uppercase tracking-widest"
+    },
+    "rules": [
+      "Never use Inter for Headings.",
+      "Use 'tracking-tight' for all headings larger than 24px.",
+      "Use 'tracking-widest' for all overline labels (e.g., 'RECENT SCANS')."
+    ]
+  },
+  "colors": {
+    "palette": {
+      "primary": "#18181B",
+      "primary_foreground": "#FAFAFA",
+      "secondary": "#F4F4F5",
+      "secondary_foreground": "#18181B",
+      "accent": "#2563EB",
+      "accent_foreground": "#FFFFFF",
+      "background": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "border": "#E2E8F0",
+      "destructive": "#EF4444",
+      "success": "#10B981"
+    },
+    "usage": {
+      "action_buttons": "bg-primary text-primary-foreground hover:bg-primary/90",
+      "scanning_state": "text-accent border-accent animate-pulse",
+      "cards": "bg-surface border border-border shadow-sm",
+      "subtle_text": "text-slate-500"
+    },
+    "forbidden": [
+      "#7351B7",
+      "#1B93A4",
+      "Gradients for backgrounds (Use solid or noise only)"
+    ]
+  },
+  "visual_enhancers": {
+    "radius": "rounded-lg (8px) for inputs, rounded-xl (12px) for cards, rounded-full for buttons",
+    "shadows": {
+      "card": "shadow-[0_2px_8px_rgba(0,0,0,0.04)]",
+      "floating": "shadow-[0_8px_30px_rgb(0,0,0,0.12)]"
+    },
+    "borders": "1px solid border-border. On active/focus: 2px solid ring-offset-2",
+    "textures": "Subtle noise overlay on the main background to reduce digital sterility (optional)."
+  },
+  "layout_strategy": {
+    "mobile_first": true,
+    "container": "w-full max-w-md mx-auto md:max-w-2xl lg:max-w-4xl xl:max-w-6xl px-4 md:px-8",
+    "spacing": {
+      "section_gap": "gap-8 md:gap-12",
+      "item_gap": "gap-4",
+      "internal_padding": "p-6"
+    },
+    "grids": {
+      "dashboard": "grid grid-cols-2 gap-4",
+      "card_list": "flex flex-col gap-3"
+    },
+    "bento_rules": "Use 'The Tetris Grid' for the dashboard. Hero block (Project Summary) takes full width. Action blocks (Scan, Import) share a row."
+  },
+  "components": {
+    "buttons": {
+      "primary": "h-12 px-6 rounded-full font-semibold shadow-sm transition-transform active:scale-95",
+      "secondary": "h-12 px-6 rounded-full border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+      "icon": "h-12 w-12 rounded-full p-0 flex items-center justify-center"
+    },
+    "inputs": {
+      "default": "h-12 bg-background border-input px-4 rounded-lg focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+      "file_upload": "border-2 border-dashed border-muted-foreground/25 hover:border-accent/50 transition-colors rounded-xl p-8 text-center cursor-pointer"
+    },
+    "cards": {
+      "contact": "bg-card text-card-foreground rounded-xl border shadow-sm p-4 flex items-center gap-4 transition-all hover:border-primary/20",
+      "project": "bg-card text-card-foreground rounded-xl border shadow-sm p-6 hover:shadow-md transition-all"
+    },
+    "navigation": {
+      "bottom_bar": "fixed bottom-0 left-0 right-0 border-t bg-background/80 backdrop-blur-lg p-2 flex justify-around items-center z-50 safe-area-bottom",
+      "fab": "fixed bottom-20 right-6 h-14 w-14 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center z-40"
+    }
+  },
+  "motion": {
+    "library": "framer-motion",
+    "transitions": {
+      "default": "transition-all duration-200 ease-out",
+      "page_enter": "initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}",
+      "list_item": "initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.05 }}"
+    },
+    "micro_interactions": {
+      "hover": "scale-[1.02]",
+      "tap": "scale-[0.98]",
+      "scan_beam": "animate-[scan_2s_ease-in-out_infinite]"
+    }
+  },
+  "assets": {
+    "icons": "lucide-react (default), @phosphor-icons/react (for specific actions if needed)",
+    "images": {
+      "empty_states": [
+        {
+          "category": "empty_project",
+          "description": "Minimalist abstract 3d shape or line art representing potential",
+          "url": "https://images.unsplash.com/photo-1634128221889-82ed6efebfc3?q=80&w=2000&auto=format&fit=crop"
+        },
+        {
+          "category": "scanning_hero",
+          "description": "Close up of business card on clean desk",
+          "url": "https://images.unsplash.com/photo-1559194249-14a400f9a562?q=80&w=2000&auto=format&fit=crop"
+        }
+      ]
+    }
+  },
+  "accessibility": {
+    "rules": [
+      "Touch targets must be at least 44x44px.",
+      "Text contrast must be WCAG AA compliant (4.5:1).",
+      "Focus rings must be visible on all interactive elements.",
+      "Form inputs must have associated labels."
+    ]
+  },
+  "feature_specifics": {
+    "camera_overlay": {
+      "style": "absolute inset-0 border-2 border-white/50 rounded-lg m-8 pointer-events-none",
+      "guide_text": "absolute bottom-12 left-0 right-0 text-center text-white text-sm font-medium shadow-black/50 drop-shadow-md"
+    },
+    "review_interface": {
+      "layout": "Split view on desktop, Stack view on mobile.",
+      "confidence_indicator": "Color-coded badge (Green > 90%, Yellow > 70%, Red < 70%)"
+    }
+  },
+  "universal_guidelines": [
+    "Do not use gradients for backgrounds.",
+    "Use 'sonner' for toasts.",
+    "Components must use named exports.",
+    "Pages must use default exports.",
+    "All interactive elements must have data-testid."
+  ],
+  "instructions_to_main_agent": "Implement the PWA with a focus on 'Tactile Utility'. The app should feel like a physical tool. Use the 'Manrope' font for all headings to give it a distinct technical look. Prioritize the scanning flow - it must be fast and obvious. Ensure the 'Review' interface is extremely legible, as users will be editing text often."
+}
