@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -17,6 +17,8 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 import pandas as pd
 import csv
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+import fitz  # PyMuPDF for PDF processing
+from PIL import Image as PILImage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -403,6 +405,125 @@ async def detect_duplicates(project_id: str, contact_data: Dict[str, Any]) -> Li
                 duplicates.append({"match": doc, "reason": "same_linkedin", "confidence": 95})
     
     return duplicates
+
+def convert_pdf_to_images(pdf_bytes: bytes, max_size: int = 1800) -> List[str]:
+    """Convert PDF pages to base64 encoded JPEG images, optimized for Claude"""
+    images_base64 = []
+    
+    # Open PDF with PyMuPDF
+    pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+    
+    for page_num in range(len(pdf_document)):
+        page = pdf_document[page_num]
+        
+        # Render at 150 DPI for good quality but manageable size
+        mat = fitz.Matrix(150/72, 150/72)
+        pix = page.get_pixmap(matrix=mat)
+        
+        # Convert to PIL Image
+        img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        
+        # Resize if too large
+        if img.width > max_size or img.height > max_size:
+            ratio = min(max_size / img.width, max_size / img.height)
+            new_size = (int(img.width * ratio), int(img.height * ratio))
+            img = img.resize(new_size, PILImage.LANCZOS)
+        
+        # Convert to JPEG with compression
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85, optimize=True)
+        
+        # If still too large (>4MB), reduce quality
+        if buffer.tell() > 4 * 1024 * 1024:
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=60, optimize=True)
+        
+        buffer.seek(0)
+        images_base64.append(base64.b64encode(buffer.read()).decode('utf-8'))
+    
+    pdf_document.close()
+    return images_base64
+
+async def extract_multiple_cards_from_page(image_base64: str, page_num: int = 1) -> List[Dict[str, Any]]:
+    """Extract ALL business cards from a single page image using ONE Claude call"""
+    settings = await get_settings()
+    api_key = settings.get('anthropic_api_key') or get_api_key()
+    model = settings.get('claude_model', 'claude-sonnet-4-5-20250929')
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No API key configured")
+    
+    system_prompt = """You are an expert at reading business cards. This image contains MULTIPLE business cards arranged on a page.
+
+Your task:
+1. Identify ALL separate business cards visible in the image
+2. Extract complete information from EACH card
+3. Return a JSON ARRAY where each element is one contact
+
+For EACH business card found, extract:
+- first_name, middle_name, last_name, full_name_original
+- job_title, department  
+- mobile_phone, direct_phone, office_phone
+- primary_email, secondary_email
+- linkedin_url, personal_website
+- company_name_display (name shown on card)
+- brand_name (commercial/trading name if different)
+- legal_company_name (legal entity if visible)
+- address, city, postal_code, province_region, country
+- industry (infer if possible)
+- confidence_score (0-100 for this specific card)
+- card_position (e.g., "top-left", "center", "bottom-right")
+- ai_notes (any issues or uncertainties for this card)
+
+IMPORTANT:
+- Return ONLY a valid JSON array: [{...}, {...}, ...]
+- Each object in the array is ONE business card
+- If you find 5 cards, return an array with 5 objects
+- Support any language on the cards
+- Distinguish brand name from legal company name
+- If a card is partially visible or unclear, still include it with lower confidence"""
+    
+    chat = LlmChat(
+        api_key=api_key,
+        session_id=f"batch-{str(uuid.uuid4())}",
+        system_message=system_prompt
+    ).with_model("anthropic", model)
+    
+    user_message = UserMessage(
+        text=f"This is page {page_num}. Find ALL business cards in this image and extract the data from each one. Return a JSON array with one object per card found.",
+        file_contents=[ImageContent(image_base64=image_base64)]
+    )
+    
+    try:
+        response = await chat.send_message(user_message)
+        response_text = response.strip()
+        
+        # Remove markdown code blocks if present
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            response_text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+            if response_text.startswith("json"):
+                response_text = response_text[4:].strip()
+        
+        # Parse JSON array
+        extracted_cards = json.loads(response_text)
+        
+        # Ensure it's a list
+        if isinstance(extracted_cards, dict):
+            extracted_cards = [extracted_cards]
+        
+        logger.info(f"Page {page_num}: Found {len(extracted_cards)} business cards")
+        return extracted_cards
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse batch response for page {page_num}: {e}")
+        return []
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Batch extraction error on page {page_num}: {error_msg}")
+        if "exceeds" in error_msg and "MB" in error_msg:
+            raise HTTPException(status_code=400, detail=f"Page {page_num} image too large")
+        raise HTTPException(status_code=500, detail=f"Failed to process page {page_num}: {error_msg}")
 
 def generate_excel_workbook(project: Dict, contacts: List[Dict], companies: List[Dict], 
                            import_logs: List[Dict], duplicates: List[Dict], ai_audits: List[Dict]) -> io.BytesIO:
@@ -799,6 +920,173 @@ async def scan_business_card(project_id: str, scan: ScanRequest):
         "duplicates": duplicates,
         "extracted_data": extracted_data
     }
+
+# --- Batch PDF Scan ---
+@api_router.post("/projects/{project_id}/scan/batch")
+async def scan_batch_pdf(project_id: str, file: UploadFile = File(...)):
+    """Process a PDF with multiple business cards per page"""
+    # Verify project exists
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Read and validate file
+    content = await file.read()
+    filename = file.filename.lower()
+    
+    if not filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported for batch scanning")
+    
+    # Check file size (max 50MB for PDF)
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF file too large (max 50MB)")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    batch_id = str(uuid.uuid4())
+    
+    try:
+        # Convert PDF pages to images
+        logger.info(f"Converting PDF '{file.filename}' to images...")
+        page_images = convert_pdf_to_images(content)
+        total_pages = len(page_images)
+        logger.info(f"PDF has {total_pages} pages")
+        
+        if total_pages == 0:
+            raise HTTPException(status_code=400, detail="PDF has no pages")
+        
+        # Process each page
+        all_contacts = []
+        all_companies = []
+        total_cards_found = 0
+        page_results = []
+        
+        for page_num, page_image in enumerate(page_images, 1):
+            logger.info(f"Processing page {page_num}/{total_pages}...")
+            
+            try:
+                # Extract all cards from this page in ONE Claude call
+                extracted_cards = await extract_multiple_cards_from_page(page_image, page_num)
+                cards_on_page = len(extracted_cards)
+                total_cards_found += cards_on_page
+                
+                # Create contact records for each card
+                for card_index, card_data in enumerate(extracted_cards):
+                    contact_doc = {
+                        "id": str(uuid.uuid4()),
+                        "project_id": project_id,
+                        "first_name": card_data.get('first_name', ''),
+                        "middle_name": card_data.get('middle_name', ''),
+                        "last_name": card_data.get('last_name', ''),
+                        "full_name": f"{card_data.get('first_name', '')} {card_data.get('last_name', '')}".strip(),
+                        "full_name_original": card_data.get('full_name_original', ''),
+                        "job_title": card_data.get('job_title', ''),
+                        "department": card_data.get('department', ''),
+                        "mobile_phone": card_data.get('mobile_phone', ''),
+                        "direct_phone": card_data.get('direct_phone', ''),
+                        "office_phone": card_data.get('office_phone', ''),
+                        "primary_email": card_data.get('primary_email', ''),
+                        "secondary_email": card_data.get('secondary_email', ''),
+                        "linkedin_url": card_data.get('linkedin_url', ''),
+                        "personal_website": card_data.get('personal_website', ''),
+                        "company_id": "",
+                        "company_name_display": card_data.get('company_name_display', ''),
+                        "brand_name": card_data.get('brand_name', ''),
+                        "legal_company_name": card_data.get('legal_company_name', ''),
+                        "import_source_type": "pdf_batch",
+                        "import_source_file": file.filename,
+                        "source_image_front": f"page_{page_num}_card_{card_index + 1}",
+                        "source_image_back": "",
+                        "confidence_score": card_data.get('confidence_score', 70),
+                        "validation_status": "pending",
+                        "review_status": "needs_review" if card_data.get('confidence_score', 70) < 80 else "pending",
+                        "duplicate_status": "none",
+                        "ai_notes": card_data.get('ai_notes', '') + f" [Page {page_num}, Position: {card_data.get('card_position', 'unknown')}]",
+                        "notes": "",
+                        "created_at": now,
+                        "updated_at": now
+                    }
+                    
+                    # Check for duplicates
+                    dups = await detect_duplicates(project_id, contact_doc)
+                    if dups:
+                        contact_doc['duplicate_status'] = 'potential_duplicate'
+                        contact_doc['review_status'] = 'needs_review'
+                    
+                    await db.contacts.insert_one(contact_doc)
+                    contact_doc.pop('_id', None)
+                    all_contacts.append(contact_doc)
+                    
+                    # Create company if applicable
+                    if card_data.get('company_name_display') or card_data.get('brand_name'):
+                        company_doc = {
+                            "id": str(uuid.uuid4()),
+                            "project_id": project_id,
+                            "legal_company_name": card_data.get('legal_company_name', ''),
+                            "brand_name": card_data.get('brand_name', ''),
+                            "company_display_name": card_data.get('company_name_display', ''),
+                            "website": card_data.get('website', ''),
+                            "main_phone": card_data.get('office_phone', ''),
+                            "main_email": "",
+                            "address": card_data.get('address', ''),
+                            "city": card_data.get('city', ''),
+                            "postal_code": card_data.get('postal_code', ''),
+                            "province_region": card_data.get('province_region', ''),
+                            "country": card_data.get('country', ''),
+                            "industry": card_data.get('industry', ''),
+                            "legal_name_confidence": 50 if card_data.get('legal_company_name') else 0,
+                            "brand_name_confidence": 80 if card_data.get('brand_name') else 0,
+                            "validation_status": "pending",
+                            "enrichment_notes": "",
+                            "notes": "",
+                            "created_at": now,
+                            "updated_at": now
+                        }
+                        await db.companies.insert_one(company_doc)
+                        company_doc.pop('_id', None)
+                        all_companies.append(company_doc)
+                        
+                        # Link contact to company
+                        await db.contacts.update_one({"id": contact_doc['id']}, {"$set": {"company_id": company_doc['id']}})
+                
+                page_results.append({"page": page_num, "cards_found": cards_on_page, "status": "success"})
+                
+            except Exception as e:
+                logger.error(f"Error processing page {page_num}: {e}")
+                page_results.append({"page": page_num, "cards_found": 0, "status": "error", "error": str(e)})
+        
+        # Log import
+        import_log = {
+            "batch_id": batch_id,
+            "project_id": project_id,
+            "source_type": "pdf_batch",
+            "file_name": file.filename,
+            "import_datetime": now,
+            "rows_imported": total_cards_found,
+            "rows_created": len(all_contacts),
+            "rows_merged": 0,
+            "rows_flagged": sum(1 for c in all_contacts if c.get('review_status') == 'needs_review'),
+            "errors": json.dumps([p for p in page_results if p['status'] == 'error'])
+        }
+        await db.import_logs.insert_one(import_log)
+        
+        # Update project timestamp
+        await db.projects.update_one({"id": project_id}, {"$set": {"updated_at": now}})
+        
+        return {
+            "batch_id": batch_id,
+            "total_pages": total_pages,
+            "total_cards_found": total_cards_found,
+            "contacts_created": len(all_contacts),
+            "companies_created": len(all_companies),
+            "page_results": page_results,
+            "needs_review": sum(1 for c in all_contacts if c.get('review_status') == 'needs_review')
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Batch PDF processing error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 
 # --- Import ---
 @api_router.post("/projects/{project_id}/import/preview")

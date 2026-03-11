@@ -22,6 +22,7 @@ import {
 import ProjectsPage from "@/pages/ProjectsPage";
 import ProjectDetailPage from "@/pages/ProjectDetailPage";
 import ScanPage from "@/pages/ScanPage";
+import BatchScanPage from "@/pages/BatchScanPage";
 import ImportPage from "@/pages/ImportPage";
 import ContactsPage from "@/pages/ContactsPage";
 import ContactDetailPage from "@/pages/ContactDetailPage";
@@ -178,6 +179,7 @@ function AppContent() {
             <Route path="/" element={<ProjectsPage />} />
             <Route path="/project/:projectId" element={<ProjectDetailPage />} />
             <Route path="/scan" element={<ScanPage />} />
+            <Route path="/scan/batch" element={<BatchScanPage />} />
             <Route path="/import" element={<ImportPage />} />
             <Route path="/contacts" element={<ContactsPage />} />
             <Route path="/contacts/:contactId" element={<ContactDetailPage />} />

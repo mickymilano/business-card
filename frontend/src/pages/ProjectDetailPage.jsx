@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { 
   Camera, FileSpreadsheet, Users, Building2, ClipboardCheck, 
-  Copy, Download, ChevronRight, Calendar, Clock
+  Copy, Download, ChevronRight, Calendar, Clock, FileText
 } from "lucide-react";
 
 const ProjectDetailPage = () => {
@@ -90,6 +90,13 @@ const ProjectDetailPage = () => {
       description: "Capture business cards",
       path: "/scan",
       color: "bg-blue-500/10 text-blue-600"
+    },
+    { 
+      icon: FileText, 
+      label: "Batch PDF", 
+      description: "Multiple cards per page",
+      path: "/scan/batch",
+      color: "bg-indigo-500/10 text-indigo-600"
     },
     { 
       icon: FileSpreadsheet, 

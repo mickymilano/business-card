@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { Camera, Upload, Image, X, Loader2, Check, AlertCircle } from "lucide-react";
+import { Camera, Upload, Image, X, Loader2, Check, AlertCircle, FileText } from "lucide-react";
 
 // Compress image to max 4MB (Claude limit is 5MB, we use 4MB for safety)
 const compressImage = (file, maxSizeMB = 4) => {
@@ -205,6 +205,28 @@ const ScanPage = () => {
             Scanning for project: <span className="font-medium text-foreground">{currentProject.name}</span>
           </p>
         </div>
+
+        {/* Batch PDF Banner */}
+        <Card 
+          className="mb-6 border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 cursor-pointer hover:shadow-md transition-all"
+          onClick={() => navigate("/scan/batch")}
+          data-testid="batch-scan-banner"
+        >
+          <CardContent className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
+                <FileText className="h-5 w-5 text-blue-600" />
+              </div>
+              <div className="flex-1">
+                <h4 className="font-semibold text-sm">Have many cards?</h4>
+                <p className="text-xs text-muted-foreground">Upload a PDF with multiple cards per page</p>
+              </div>
+              <Button size="sm" variant="secondary" className="rounded-full">
+                Batch Scan
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Toggle for back side */}
         <div className="flex items-center justify-center gap-3 mb-6">
