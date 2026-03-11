@@ -378,7 +378,7 @@ async def detect_duplicates(project_id: str, contact_data: Dict[str, Any]) -> Li
             "first_name": contact_data['first_name'],
             "last_name": contact_data['last_name'],
             "mobile_phone": contact_data['mobile_phone']
-        }, {"_id": 0})
+        }, {"_id": 0}).limit(10)
         async for doc in cursor:
             duplicates.append({"match": doc, "reason": "same_name_mobile", "confidence": 95})
     
@@ -389,7 +389,7 @@ async def detect_duplicates(project_id: str, contact_data: Dict[str, Any]) -> Li
             "first_name": contact_data['first_name'],
             "last_name": contact_data['last_name'],
             "primary_email": contact_data['primary_email']
-        }, {"_id": 0})
+        }, {"_id": 0}).limit(10)
         async for doc in cursor:
             if doc.get('id') not in [d['match'].get('id') for d in duplicates]:
                 duplicates.append({"match": doc, "reason": "same_name_email", "confidence": 90})
@@ -399,7 +399,7 @@ async def detect_duplicates(project_id: str, contact_data: Dict[str, Any]) -> Li
         cursor = db.contacts.find({
             "project_id": project_id,
             "linkedin_url": contact_data['linkedin_url']
-        }, {"_id": 0})
+        }, {"_id": 0}).limit(10)
         async for doc in cursor:
             if doc.get('id') not in [d['match'].get('id') for d in duplicates]:
                 duplicates.append({"match": doc, "reason": "same_linkedin", "confidence": 95})
@@ -652,10 +652,34 @@ async def test_connection():
 async def get_projects():
     projects = await db.projects.find({}, {"_id": 0}).to_list(1000)
     
-    # Get counts for each project
+    if not projects:
+        return projects
+    
+    # Get all project IDs
+    project_ids = [p['id'] for p in projects]
+    
+    # Get contact counts in batch
+    contact_counts = {}
+    contact_pipeline = [
+        {"$match": {"project_id": {"$in": project_ids}}},
+        {"$group": {"_id": "$project_id", "count": {"$sum": 1}}}
+    ]
+    async for doc in db.contacts.aggregate(contact_pipeline):
+        contact_counts[doc['_id']] = doc['count']
+    
+    # Get company counts in batch
+    company_counts = {}
+    company_pipeline = [
+        {"$match": {"project_id": {"$in": project_ids}}},
+        {"$group": {"_id": "$project_id", "count": {"$sum": 1}}}
+    ]
+    async for doc in db.companies.aggregate(company_pipeline):
+        company_counts[doc['_id']] = doc['count']
+    
+    # Assign counts to projects
     for p in projects:
-        p['contact_count'] = await db.contacts.count_documents({"project_id": p['id']})
-        p['company_count'] = await db.companies.count_documents({"project_id": p['id']})
+        p['contact_count'] = contact_counts.get(p['id'], 0)
+        p['company_count'] = company_counts.get(p['id'], 0)
     
     return projects
 
