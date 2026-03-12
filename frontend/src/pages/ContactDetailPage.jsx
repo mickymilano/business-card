@@ -173,6 +173,11 @@ const ContactDetailPage = () => {
       { key: "brand_name", label: "Brand Name", icon: Building2 },
       { key: "legal_company_name", label: "Legal Name", icon: Building2 },
     ]},
+    { section: "Address", fields: [
+      { key: "address", label: "Address (Street, City, Province)", icon: MapPin },
+      { key: "postal_code", label: "Postal Code / ZIP / CAP", icon: MapPin },
+      { key: "country", label: "Country", icon: Globe },
+    ]},
   ];
 
   const getConfidenceColor = (score) => {

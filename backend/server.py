@@ -79,6 +79,9 @@ class ContactCreate(BaseModel):
     company_name_display: Optional[str] = ""
     brand_name: Optional[str] = ""
     legal_company_name: Optional[str] = ""
+    address: Optional[str] = ""
+    postal_code: Optional[str] = ""
+    country: Optional[str] = ""
     import_source_type: Optional[str] = ""
     import_source_file: Optional[str] = ""
     source_image_front: Optional[str] = ""
@@ -112,6 +115,9 @@ class ContactResponse(BaseModel):
     company_name_display: str
     brand_name: str
     legal_company_name: str
+    address: str = ""
+    postal_code: str = ""
+    country: str = ""
     import_source_type: str
     import_source_file: str
     source_image_front: str
@@ -243,28 +249,59 @@ async def extract_business_card_data(image_base64: str, image_back_base64: Optio
     if not api_key:
         raise HTTPException(status_code=400, detail="No API key configured")
     
-    system_prompt = """You are an expert at reading and extracting structured data from business cards.
+    system_prompt = """You are an expert at reading and extracting structured data from business cards in any language.
     Extract all visible information and return it as a JSON object with these fields:
-    - first_name, middle_name, last_name, full_name_original
-    - job_title, department
-    - mobile_phone, direct_phone, office_phone
-    - primary_email, secondary_email
-    - linkedin_url, personal_website
+
+    PERSONAL INFO:
+    - first_name (given name)
+    - middle_name (if present)
+    - last_name (family name/surname)
+    - full_name_original (exact name as written on card)
+    
+    PROFESSIONAL INFO:
+    - job_title (position/role)
+    - department (if specified)
+    
+    CONTACT INFO:
+    - mobile_phone (cellphone/mobile number)
+    - direct_phone (direct line)
+    - office_phone (main office/switchboard)
+    - primary_email (main email address)
+    - secondary_email (alternative email if present)
+    - linkedin_url (LinkedIn profile URL)
+    - personal_website (personal site if different from company)
+    
+    COMPANY INFO:
     - company_name_display (the name shown on card)
-    - brand_name (commercial/trading name if different)
-    - legal_company_name (legal entity name if visible, otherwise empty)
-    - address, city, postal_code, province_region, country
-    - industry (infer if possible)
+    - brand_name (commercial/trading name if different from legal)
+    - legal_company_name (legal entity: Srl, SpA, Ltd, GmbH, Inc, etc. if visible)
+    - website (company website)
+    
+    ADDRESS INFO (IMPORTANT - extract carefully):
+    - address (street name, street number, city, province/state - all in one line, e.g., "Via Roma 123, Milano, MI")
+    - postal_code (ZIP/CAP/postcode - ONLY the numeric/alphanumeric code, e.g., "20121")
+    - country (country name, e.g., "Italy", "Italia", "Deutschland")
+    
+    METADATA:
+    - industry (infer from company name/context if possible)
     - confidence_score (0-100, your confidence in extraction accuracy)
     - ai_notes (any observations, uncertainties, or quality issues)
     
-    Important rules:
-    1. Distinguish between brand name and legal company name
-    2. Identify all phone numbers and categorize them
-    3. Detect email addresses carefully
-    4. Note any extraction uncertainties in ai_notes
-    5. Support any language on the card
-    6. Return ONLY valid JSON, no markdown formatting"""
+    IMPORTANT RULES:
+    1. For ADDRESS: combine street, number, city, province into "address" field
+    2. For POSTAL_CODE: extract ONLY the postal/ZIP code (e.g., "20121", "00100", "10115")
+    3. For COUNTRY: extract the country name separately
+    4. Distinguish between brand name and legal company name
+    5. Identify all phone numbers with country codes if visible
+    6. Support ANY language on the card (Italian, English, German, Chinese, etc.)
+    7. Return ONLY valid JSON, no markdown formatting
+    8. If a field is not visible, use empty string ""
+    
+    Example address extraction:
+    - Card shows: "Via Garibaldi 45, 20121 Milano (MI), Italia"
+    - address: "Via Garibaldi 45, Milano, MI"
+    - postal_code: "20121"
+    - country: "Italia" """
     
     chat = LlmChat(
         api_key=api_key,
@@ -453,7 +490,7 @@ async def extract_multiple_cards_from_page(image_base64: str, page_num: int = 1)
     if not api_key:
         raise HTTPException(status_code=400, detail="No API key configured")
     
-    system_prompt = """You are an expert at reading business cards. This image contains MULTIPLE business cards arranged on a page.
+    system_prompt = """You are an expert at reading business cards in any language. This image contains MULTIPLE business cards arranged on a page.
 
 Your task:
 1. Identify ALL separate business cards visible in the image
@@ -461,27 +498,44 @@ Your task:
 3. Return a JSON ARRAY where each element is one contact
 
 For EACH business card found, extract:
+
+PERSONAL INFO:
 - first_name, middle_name, last_name, full_name_original
-- job_title, department  
+
+PROFESSIONAL INFO:
+- job_title, department
+
+CONTACT INFO:
 - mobile_phone, direct_phone, office_phone
 - primary_email, secondary_email
 - linkedin_url, personal_website
+
+COMPANY INFO:
 - company_name_display (name shown on card)
 - brand_name (commercial/trading name if different)
-- legal_company_name (legal entity if visible)
-- address, city, postal_code, province_region, country
+- legal_company_name (legal entity: Srl, SpA, Ltd, GmbH, Inc, etc.)
+- website
+
+ADDRESS INFO (IMPORTANT):
+- address (street, number, city, province - all in one line, e.g., "Via Roma 123, Milano, MI")
+- postal_code (ONLY the ZIP/CAP code, e.g., "20121")
+- country (country name, e.g., "Italy")
+
+METADATA:
 - industry (infer if possible)
 - confidence_score (0-100 for this specific card)
 - card_position (e.g., "top-left", "center", "bottom-right")
-- ai_notes (any issues or uncertainties for this card)
+- ai_notes (any issues or uncertainties)
 
-IMPORTANT:
+IMPORTANT RULES:
 - Return ONLY a valid JSON array: [{...}, {...}, ...]
 - Each object in the array is ONE business card
 - If you find 5 cards, return an array with 5 objects
-- Support any language on the cards
-- Distinguish brand name from legal company name
-- If a card is partially visible or unclear, still include it with lower confidence"""
+- Support ANY language on the cards (Italian, English, German, Chinese, etc.)
+- For ADDRESS: combine street, number, city, province into one "address" field
+- For POSTAL_CODE: extract ONLY the numeric/alphanumeric code
+- For COUNTRY: extract country name separately
+- If a card is partially visible, include it with lower confidence"""
     
     chat = LlmChat(
         api_key=api_key,
@@ -871,6 +925,9 @@ async def scan_business_card(project_id: str, scan: ScanRequest):
         "company_name_display": extracted_data.get('company_name_display', ''),
         "brand_name": extracted_data.get('brand_name', ''),
         "legal_company_name": extracted_data.get('legal_company_name', ''),
+        "address": extracted_data.get('address', ''),
+        "postal_code": extracted_data.get('postal_code', ''),
+        "country": extracted_data.get('country', ''),
         "import_source_type": "scan",
         "import_source_file": "",
         "source_image_front": scan.image_front[:100] + "..." if len(scan.image_front) > 100 else scan.image_front,
@@ -1016,6 +1073,9 @@ async def scan_batch_pdf(project_id: str, file: UploadFile = File(...)):
                         "company_name_display": card_data.get('company_name_display', ''),
                         "brand_name": card_data.get('brand_name', ''),
                         "legal_company_name": card_data.get('legal_company_name', ''),
+                        "address": card_data.get('address', ''),
+                        "postal_code": card_data.get('postal_code', ''),
+                        "country": card_data.get('country', ''),
                         "import_source_type": "pdf_batch",
                         "import_source_file": file.filename,
                         "source_image_front": f"page_{page_num}_card_{card_index + 1}",

@@ -184,15 +184,20 @@ const ProjectDetailPage = () => {
           </CardContent>
         </Card>
 
-        {/* Quick Stats */}
+        {/* Quick Stats - Clickable */}
         <div className="grid grid-cols-4 gap-2 mb-6">
           {[
-            { label: "Contacts", value: stats.contacts, color: "text-blue-600" },
-            { label: "Companies", value: stats.companies, color: "text-purple-600" },
-            { label: "Review", value: stats.needsReview, color: "text-yellow-600" },
-            { label: "Duplicates", value: stats.duplicates, color: "text-red-600" }
+            { label: "Contacts", value: stats.contacts, color: "text-blue-600", path: "/contacts" },
+            { label: "Companies", value: stats.companies, color: "text-purple-600", path: "/companies" },
+            { label: "Review", value: stats.needsReview, color: "text-yellow-600", path: "/review" },
+            { label: "Duplicates", value: stats.duplicates, color: "text-red-600", path: "/duplicates" }
           ].map((stat, i) => (
-            <div key={i} className="text-center p-3 bg-card rounded-xl border">
+            <div 
+              key={i} 
+              className="text-center p-3 bg-card rounded-xl border cursor-pointer hover:shadow-md transition-all active:scale-95"
+              onClick={() => navigate(stat.path)}
+              data-testid={`stat-${stat.label.toLowerCase()}`}
+            >
               <div className={`text-2xl font-bold font-['Manrope'] ${stat.color}`}>
                 {stat.value}
               </div>
