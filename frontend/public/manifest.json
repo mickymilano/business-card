@@ -1,33 +1,43 @@
 {
-  "short_name": "BizScan",
-  "name": "BizScan Pro - Business Card Scanner",
+  "short_name": "ES Cards",
+  "name": "ES - Business Card Scanner",
   "description": "Scan business cards, import contacts, and manage your professional network",
   "icons": [
     {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
+      "src": "favicon-16x16.png",
+      "sizes": "16x16",
+      "type": "image/png"
     },
     {
-      "src": "logo192.png",
+      "src": "favicon-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-192.png",
       "type": "image/png",
       "sizes": "192x192",
       "purpose": "any maskable"
     },
     {
-      "src": "logo512.png",
+      "src": "icon-512.png",
       "type": "image/png",
       "sizes": "512x512",
       "purpose": "any maskable"
+    },
+    {
+      "src": "apple-touch-icon.png",
+      "type": "image/png",
+      "sizes": "180x180",
+      "purpose": "any"
     }
   ],
-  "start_url": ".",
+  "start_url": "/",
   "display": "standalone",
-  "theme_color": "#18181B",
-  "background_color": "#F8FAFC",
+  "theme_color": "#4A90A4",
+  "background_color": "#4A90A4",
   "orientation": "portrait-primary",
   "scope": "/",
   "categories": ["business", "productivity"],
-  "screenshots": [],
   "prefer_related_applications": false
 }
