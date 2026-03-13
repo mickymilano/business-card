@@ -1398,7 +1398,7 @@ async def merge_duplicates(project_id: str, contact_ids: List[str], keep_id: str
 
 @api_router.post("/projects/{project_id}/duplicates/dismiss")
 async def dismiss_duplicate(project_id: str, contact_id: str):
-    """Mark a contact as not a duplicate"""
+    """Mark a contact as not a duplicate (keep it but remove duplicate flag)"""
     result = await db.contacts.update_one(
         {"id": contact_id, "project_id": project_id},
         {"$set": {"duplicate_status": "dismissed", "updated_at": datetime.now(timezone.utc).isoformat()}}
@@ -1406,6 +1406,35 @@ async def dismiss_duplicate(project_id: str, contact_id: str):
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Contact not found")
     return {"message": "Duplicate dismissed"}
+
+@api_router.delete("/projects/{project_id}/duplicates/{contact_id}")
+async def delete_duplicate(project_id: str, contact_id: str):
+    """Permanently delete a duplicate contact from database"""
+    # First check if contact exists
+    contact = await db.contacts.find_one({"id": contact_id, "project_id": project_id}, {"_id": 0})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    
+    # Delete the contact
+    await db.contacts.delete_one({"id": contact_id, "project_id": project_id})
+    
+    # If contact had a company, check if other contacts use it
+    if contact.get('company_id'):
+        other_contacts = await db.contacts.count_documents({
+            "project_id": project_id,
+            "company_id": contact['company_id']
+        })
+        # If no other contacts use this company, delete it too
+        if other_contacts == 0:
+            await db.companies.delete_one({"id": contact['company_id'], "project_id": project_id})
+    
+    # Update project timestamp
+    await db.projects.update_one(
+        {"id": project_id}, 
+        {"$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    return {"message": "Duplicate deleted permanently"}
 
 # --- Review ---
 @api_router.get("/projects/{project_id}/review")

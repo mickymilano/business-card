@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { Copy, Check, Merge, X, ChevronRight, Users } from "lucide-react";
+import { Copy, Check, Trash2, X, ChevronRight, Users } from "lucide-react";
 
 const DuplicatesPage = () => {
   const navigate = useNavigate();
@@ -34,7 +34,7 @@ const DuplicatesPage = () => {
     }
   };
 
-  const dismissDuplicate = async (e, contactId) => {
+  const keepContact = async (e, contactId) => {
     e.stopPropagation();
     try {
       const res = await fetch(`${API}/projects/${currentProject.id}/duplicates/dismiss?contact_id=${contactId}`, {
@@ -42,10 +42,28 @@ const DuplicatesPage = () => {
       });
       if (res.ok) {
         setDuplicates(duplicates.filter(c => c.id !== contactId));
-        toast.success("Duplicate dismissed");
+        toast.success("Contact kept - duplicate flag removed");
       }
     } catch (e) {
-      toast.error("Failed to dismiss duplicate");
+      toast.error("Failed to update contact");
+    }
+  };
+
+  const deleteContact = async (e, contactId) => {
+    e.stopPropagation();
+    if (!window.confirm("Delete this contact permanently? This cannot be undone.")) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API}/projects/${currentProject.id}/duplicates/${contactId}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        setDuplicates(duplicates.filter(c => c.id !== contactId));
+        toast.success("Contact deleted permanently");
+      }
+    } catch (e) {
+      toast.error("Failed to delete contact");
     }
   };
 
@@ -92,7 +110,7 @@ const DuplicatesPage = () => {
         ) : (
           <div className="space-y-4" data-testid="duplicates-list">
             <p className="text-sm text-muted-foreground">
-              These contacts may be duplicates based on matching names, emails, or phone numbers.
+              These contacts may be duplicates. Choose to <strong>Keep</strong> (remove duplicate flag) or <strong>Delete</strong> (remove permanently).
             </p>
 
             <div className="flex flex-col gap-3">
@@ -136,16 +154,28 @@ const DuplicatesPage = () => {
                           </Badge>
                         </div>
 
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="rounded-full text-muted-foreground hover:text-foreground"
-                          onClick={(e) => dismissDuplicate(e, contact.id)}
-                          data-testid={`dismiss-${contact.id}`}
-                        >
-                          <X className="h-4 w-4 mr-1" />
-                          Not duplicate
-                        </Button>
+                        <div className="flex flex-col gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="rounded-full text-green-600 border-green-200 hover:bg-green-50 hover:text-green-700"
+                            onClick={(e) => keepContact(e, contact.id)}
+                            data-testid={`keep-${contact.id}`}
+                          >
+                            <Check className="h-4 w-4 mr-1" />
+                            Keep
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="rounded-full text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+                            onClick={(e) => deleteContact(e, contact.id)}
+                            data-testid={`delete-${contact.id}`}
+                          >
+                            <Trash2 className="h-4 w-4 mr-1" />
+                            Delete
+                          </Button>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
