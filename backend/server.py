@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Request, Response, Depends
+from fastapi.responses import JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,59 +9,62 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import base64
 import json
 import io
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-import pandas as pd
-import csv
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+import httpx
+from openpyxl import Workbook
 import fitz  # PyMuPDF for PDF processing
 from PIL import Image as PILImage
+from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+
+# Google API imports
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+# MongoDB for user sessions only (not for business data)
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ.get('DB_NAME', 'test_database')]
 
 # Create the main app
 app = FastAPI()
-
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Constants
+ROOT_FOLDER_NAME = "Business Card Scanner"
+SCOPES = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/spreadsheets'
+]
 
 # ===================
 # MODELS
 # ===================
 
+class UserSession(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    picture: str
+    session_token: str
+    google_access_token: str
+    google_refresh_token: Optional[str] = None
+    expires_at: datetime
+
 class ProjectCreate(BaseModel):
     name: str
     notes: Optional[str] = ""
 
-class ProjectResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    name: str
-    created_at: str
-    updated_at: str
-    notes: str
-    contact_count: int = 0
-    company_count: int = 0
-
 class ContactCreate(BaseModel):
-    project_id: str
     first_name: Optional[str] = ""
     middle_name: Optional[str] = ""
     last_name: Optional[str] = ""
@@ -82,10 +86,6 @@ class ContactCreate(BaseModel):
     address: Optional[str] = ""
     postal_code: Optional[str] = ""
     country: Optional[str] = ""
-    import_source_type: Optional[str] = ""
-    import_source_file: Optional[str] = ""
-    source_image_front: Optional[str] = ""
-    source_image_back: Optional[str] = ""
     confidence_score: Optional[float] = 0.0
     validation_status: Optional[str] = "pending"
     review_status: Optional[str] = "pending"
@@ -93,156 +93,268 @@ class ContactCreate(BaseModel):
     ai_notes: Optional[str] = ""
     notes: Optional[str] = ""
 
-class ContactResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
+class ScanRequest(BaseModel):
     project_id: str
-    first_name: str
-    middle_name: str
-    last_name: str
-    full_name: str
-    full_name_original: str
-    job_title: str
-    department: str
-    mobile_phone: str
-    direct_phone: str
-    office_phone: str
-    primary_email: str
-    secondary_email: str
-    linkedin_url: str
-    personal_website: str
-    company_id: str
-    company_name_display: str
-    brand_name: str
-    legal_company_name: str
-    address: str = ""
-    postal_code: str = ""
-    country: str = ""
-    import_source_type: str
-    import_source_file: str
-    source_image_front: str
-    source_image_back: str
-    confidence_score: float
-    validation_status: str
-    review_status: str
-    duplicate_status: str
-    ai_notes: str
-    notes: str
-    created_at: str
-    updated_at: str
-
-class CompanyCreate(BaseModel):
-    project_id: str
-    legal_company_name: Optional[str] = ""
-    brand_name: Optional[str] = ""
-    company_display_name: Optional[str] = ""
-    website: Optional[str] = ""
-    main_phone: Optional[str] = ""
-    main_email: Optional[str] = ""
-    address: Optional[str] = ""
-    city: Optional[str] = ""
-    postal_code: Optional[str] = ""
-    province_region: Optional[str] = ""
-    country: Optional[str] = ""
-    industry: Optional[str] = ""
-    legal_name_confidence: Optional[float] = 0.0
-    brand_name_confidence: Optional[float] = 0.0
-    validation_status: Optional[str] = "pending"
-    enrichment_notes: Optional[str] = ""
-    notes: Optional[str] = ""
-
-class CompanyResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    project_id: str
-    legal_company_name: str
-    brand_name: str
-    company_display_name: str
-    website: str
-    main_phone: str
-    main_email: str
-    address: str
-    city: str
-    postal_code: str
-    province_region: str
-    country: str
-    industry: str
-    legal_name_confidence: float
-    brand_name_confidence: float
-    validation_status: str
-    enrichment_notes: str
-    notes: str
-    created_at: str
-    updated_at: str
+    image_front: str
+    image_back: Optional[str] = None
 
 class SettingsUpdate(BaseModel):
     anthropic_api_key: Optional[str] = None
     claude_model: Optional[str] = "claude-sonnet-4-5-20250929"
     ai_enabled: Optional[bool] = True
-    ai_ocr_enabled: Optional[bool] = True
-    ai_validation_enabled: Optional[bool] = True
-    ai_duplicate_enabled: Optional[bool] = True
-
-class SettingsResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    anthropic_api_key: str
-    claude_model: str
-    ai_enabled: bool
-    ai_ocr_enabled: bool
-    ai_validation_enabled: bool
-    ai_duplicate_enabled: bool
-    connection_status: str
-
-class ScanRequest(BaseModel):
-    project_id: str
-    image_front: str  # base64 encoded
-    image_back: Optional[str] = None  # base64 encoded
-    multiple_cards: Optional[bool] = False
-
-class ImportMappingRequest(BaseModel):
-    project_id: str
-    file_content: str  # base64 encoded
-    file_type: str  # xlsx, xls, csv
-    column_mapping: Dict[str, str]  # source_column -> target_field
-
-class DuplicateGroup(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    project_id: str
-    record_type: str
-    candidate_ids: List[str]
-    duplicate_reason: str
-    confidence_score: float
-    decision_status: str
-    decided_by: str
-    decision_datetime: str
 
 # ===================
-# HELPER FUNCTIONS
+# AUTH HELPERS
+# ===================
+
+async def get_current_user(request: Request) -> Dict[str, Any]:
+    """Get current user from session token"""
+    session_token = request.cookies.get("session_token")
+    if not session_token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            session_token = auth_header[7:]
+    
+    if not session_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    session = await db.user_sessions.find_one({"session_token": session_token}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    
+    # Check expiry
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Session expired")
+    
+    return session
+
+def get_google_credentials(session: Dict[str, Any]) -> Credentials:
+    """Create Google credentials from session"""
+    return Credentials(
+        token=session.get("google_access_token"),
+        refresh_token=session.get("google_refresh_token"),
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
+        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+        scopes=SCOPES
+    )
+
+# ===================
+# GOOGLE DRIVE/SHEETS HELPERS
+# ===================
+
+async def get_or_create_root_folder(credentials: Credentials) -> str:
+    """Get or create the root 'Business Card Scanner' folder"""
+    drive_service = build('drive', 'v3', credentials=credentials)
+    
+    # Search for existing folder
+    query = f"name='{ROOT_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = drive_service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    files = results.get('files', [])
+    
+    if files:
+        return files[0]['id']
+    
+    # Create folder
+    folder_metadata = {
+        'name': ROOT_FOLDER_NAME,
+        'mimeType': 'application/vnd.google-apps.folder'
+    }
+    folder = drive_service.files().create(body=folder_metadata, fields='id').execute()
+    logger.info(f"Created root folder: {ROOT_FOLDER_NAME}")
+    return folder['id']
+
+async def get_or_create_project_folder(credentials: Credentials, root_folder_id: str, project_name: str) -> str:
+    """Get or create a project folder inside root"""
+    drive_service = build('drive', 'v3', credentials=credentials)
+    
+    # Search for existing folder
+    query = f"name='{project_name}' and '{root_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = drive_service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    files = results.get('files', [])
+    
+    if files:
+        return files[0]['id']
+    
+    # Create folder
+    folder_metadata = {
+        'name': project_name,
+        'mimeType': 'application/vnd.google-apps.folder',
+        'parents': [root_folder_id]
+    }
+    folder = drive_service.files().create(body=folder_metadata, fields='id').execute()
+    logger.info(f"Created project folder: {project_name}")
+    return folder['id']
+
+async def get_or_create_spreadsheet(credentials: Credentials, folder_id: str, name: str, headers: List[str]) -> str:
+    """Get or create a Google Sheet with headers"""
+    drive_service = build('drive', 'v3', credentials=credentials)
+    sheets_service = build('sheets', 'v4', credentials=credentials)
+    
+    # Search for existing spreadsheet
+    query = f"name='{name}' and '{folder_id}' in parents and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+    results = drive_service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    files = results.get('files', [])
+    
+    if files:
+        return files[0]['id']
+    
+    # Create spreadsheet
+    spreadsheet_metadata = {
+        'name': name,
+        'mimeType': 'application/vnd.google-apps.spreadsheet',
+        'parents': [folder_id]
+    }
+    spreadsheet = drive_service.files().create(body=spreadsheet_metadata, fields='id').execute()
+    spreadsheet_id = spreadsheet['id']
+    
+    # Add headers
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range='Sheet1!A1',
+        valueInputOption='RAW',
+        body={'values': [headers]}
+    ).execute()
+    
+    logger.info(f"Created spreadsheet: {name}")
+    return spreadsheet_id
+
+async def read_sheet_data(credentials: Credentials, spreadsheet_id: str) -> List[Dict[str, Any]]:
+    """Read all data from a spreadsheet and return as list of dicts"""
+    sheets_service = build('sheets', 'v4', credentials=credentials)
+    
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range='Sheet1'
+    ).execute()
+    
+    values = result.get('values', [])
+    if not values or len(values) < 2:
+        return []
+    
+    headers = values[0]
+    data = []
+    for row in values[1:]:
+        # Pad row to match headers length
+        row_padded = row + [''] * (len(headers) - len(row))
+        data.append(dict(zip(headers, row_padded)))
+    
+    return data
+
+async def append_to_sheet(credentials: Credentials, spreadsheet_id: str, row_data: List[str]):
+    """Append a row to a spreadsheet"""
+    sheets_service = build('sheets', 'v4', credentials=credentials)
+    
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range='Sheet1',
+        valueInputOption='RAW',
+        insertDataOption='INSERT_ROWS',
+        body={'values': [row_data]}
+    ).execute()
+
+async def update_sheet_row(credentials: Credentials, spreadsheet_id: str, row_index: int, row_data: List[str]):
+    """Update a specific row in a spreadsheet (row_index is 0-based, excluding header)"""
+    sheets_service = build('sheets', 'v4', credentials=credentials)
+    
+    # Row 1 is header, so actual row is row_index + 2
+    range_str = f'Sheet1!A{row_index + 2}'
+    
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range_str,
+        valueInputOption='RAW',
+        body={'values': [row_data]}
+    ).execute()
+
+async def delete_sheet_row(credentials: Credentials, spreadsheet_id: str, row_index: int):
+    """Delete a row from spreadsheet (row_index is 0-based, excluding header)"""
+    sheets_service = build('sheets', 'v4', credentials=credentials)
+    
+    # Get sheet ID (not spreadsheet ID)
+    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheet_id = spreadsheet['sheets'][0]['properties']['sheetId']
+    
+    # Delete row (row_index + 1 because header is row 0)
+    requests = [{
+        'deleteDimension': {
+            'range': {
+                'sheetId': sheet_id,
+                'dimension': 'ROWS',
+                'startIndex': row_index + 1,  # +1 for header
+                'endIndex': row_index + 2
+            }
+        }
+    }]
+    
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={'requests': requests}
+    ).execute()
+
+# ===================
+# PROJECT HELPERS
+# ===================
+
+CONTACT_HEADERS = [
+    "id", "first_name", "middle_name", "last_name", "full_name", "full_name_original",
+    "job_title", "department", "mobile_phone", "direct_phone", "office_phone",
+    "primary_email", "secondary_email", "linkedin_url", "personal_website",
+    "company_id", "company_name_display", "brand_name", "legal_company_name",
+    "address", "postal_code", "country", "import_source_type", "import_source_file",
+    "confidence_score", "validation_status", "review_status", "duplicate_status",
+    "ai_notes", "notes", "created_at", "updated_at"
+]
+
+COMPANY_HEADERS = [
+    "id", "legal_company_name", "brand_name", "company_display_name",
+    "website", "main_phone", "main_email", "address", "city", "postal_code",
+    "province_region", "country", "industry", "validation_status",
+    "notes", "created_at", "updated_at"
+]
+
+PROJECT_HEADERS = [
+    "id", "name", "folder_id", "contacts_sheet_id", "companies_sheet_id",
+    "notes", "created_at", "updated_at"
+]
+
+async def get_projects_sheet_id(credentials: Credentials, root_folder_id: str) -> str:
+    """Get or create the master Projects spreadsheet"""
+    return await get_or_create_spreadsheet(credentials, root_folder_id, "_Projects", PROJECT_HEADERS)
+
+async def setup_project_sheets(credentials: Credentials, project_folder_id: str) -> tuple:
+    """Create Contacts and Companies sheets for a project"""
+    contacts_id = await get_or_create_spreadsheet(credentials, project_folder_id, "Contacts", CONTACT_HEADERS)
+    companies_id = await get_or_create_spreadsheet(credentials, project_folder_id, "Companies", COMPANY_HEADERS)
+    return contacts_id, companies_id
+
+# ===================
+# AI HELPERS
 # ===================
 
 def get_api_key():
-    """Get API key - prefer stored key, fallback to emergent key"""
     return os.environ.get('EMERGENT_LLM_KEY', '')
 
-async def get_settings():
-    """Get current settings from DB or return defaults"""
-    settings = await db.settings.find_one({}, {"_id": 0})
+async def get_user_settings(user_id: str) -> Dict[str, Any]:
+    """Get user settings from MongoDB"""
+    settings = await db.user_settings.find_one({"user_id": user_id}, {"_id": 0})
     if not settings:
         settings = {
+            "user_id": user_id,
             "anthropic_api_key": "",
             "claude_model": "claude-sonnet-4-5-20250929",
-            "ai_enabled": True,
-            "ai_ocr_enabled": True,
-            "ai_validation_enabled": True,
-            "ai_duplicate_enabled": True,
-            "connection_status": "not_tested"
+            "ai_enabled": True
         }
     return settings
 
-async def extract_business_card_data(image_base64: str, image_back_base64: Optional[str] = None) -> Dict[str, Any]:
+async def extract_business_card_data(image_base64: str, image_back_base64: Optional[str], user_id: str) -> Dict[str, Any]:
     """Extract data from business card image using Claude"""
-    settings = await get_settings()
+    settings = await get_user_settings(user_id)
     api_key = settings.get('anthropic_api_key') or get_api_key()
     model = settings.get('claude_model', 'claude-sonnet-4-5-20250929')
     
@@ -253,55 +365,28 @@ async def extract_business_card_data(image_base64: str, image_back_base64: Optio
     Extract all visible information and return it as a JSON object with these fields:
 
     PERSONAL INFO:
-    - first_name (given name)
-    - middle_name (if present)
-    - last_name (family name/surname)
-    - full_name_original (exact name as written on card)
+    - first_name, middle_name, last_name, full_name_original
     
     PROFESSIONAL INFO:
-    - job_title (position/role)
-    - department (if specified)
+    - job_title, department
     
     CONTACT INFO:
-    - mobile_phone (cellphone/mobile number)
-    - direct_phone (direct line)
-    - office_phone (main office/switchboard)
-    - primary_email (main email address)
-    - secondary_email (alternative email if present)
-    - linkedin_url (LinkedIn profile URL)
-    - personal_website (personal site if different from company)
+    - mobile_phone, direct_phone, office_phone
+    - primary_email, secondary_email
+    - linkedin_url, personal_website
     
     COMPANY INFO:
-    - company_name_display (the name shown on card)
-    - brand_name (commercial/trading name if different from legal)
-    - legal_company_name (legal entity: Srl, SpA, Ltd, GmbH, Inc, etc. if visible)
-    - website (company website)
+    - company_name_display, brand_name, legal_company_name, website
     
-    ADDRESS INFO (IMPORTANT - extract carefully):
-    - address (street name, street number, city, province/state - all in one line, e.g., "Via Roma 123, Milano, MI")
-    - postal_code (ZIP/CAP/postcode - ONLY the numeric/alphanumeric code, e.g., "20121")
-    - country (country name, e.g., "Italy", "Italia", "Deutschland")
+    ADDRESS INFO:
+    - address (street, number, city, province in one line)
+    - postal_code (only ZIP/CAP code)
+    - country
     
     METADATA:
-    - industry (infer from company name/context if possible)
-    - confidence_score (0-100, your confidence in extraction accuracy)
-    - ai_notes (any observations, uncertainties, or quality issues)
+    - industry, confidence_score (0-100), ai_notes
     
-    IMPORTANT RULES:
-    1. For ADDRESS: combine street, number, city, province into "address" field
-    2. For POSTAL_CODE: extract ONLY the postal/ZIP code (e.g., "20121", "00100", "10115")
-    3. For COUNTRY: extract the country name separately
-    4. Distinguish between brand name and legal company name
-    5. Identify all phone numbers with country codes if visible
-    6. Support ANY language on the card (Italian, English, German, Chinese, etc.)
-    7. Return ONLY valid JSON, no markdown formatting
-    8. If a field is not visible, use empty string ""
-    
-    Example address extraction:
-    - Card shows: "Via Garibaldi 45, 20121 Milano (MI), Italia"
-    - address: "Via Garibaldi 45, Milano, MI"
-    - postal_code: "20121"
-    - country: "Italia" """
+    Return ONLY valid JSON, no markdown."""
     
     chat = LlmChat(
         api_key=api_key,
@@ -309,372 +394,728 @@ async def extract_business_card_data(image_base64: str, image_back_base64: Optio
         system_message=system_prompt
     ).with_model("anthropic", model)
     
-    # Build message with image(s)
     images = [ImageContent(image_base64=image_base64)]
-    prompt = "Extract all contact and company information from this business card image. Return the data as a valid JSON object."
+    prompt = "Extract all contact and company information from this business card."
     
     if image_back_base64:
         images.append(ImageContent(image_base64=image_back_base64))
-        prompt = "Extract all contact and company information from both sides of this business card. The first image is the front, the second is the back. Combine all information into a single JSON object."
+        prompt = "Extract all information from both sides of this business card."
     
-    user_message = UserMessage(
-        text=prompt,
-        file_contents=images
-    )
+    user_message = UserMessage(text=prompt, file_contents=images)
     
     try:
         response = await chat.send_message(user_message)
-        # Parse JSON from response
         response_text = response.strip()
-        # Remove markdown code blocks if present
         if response_text.startswith("```"):
             response_text = response_text.split("```")[1]
             if response_text.startswith("json"):
                 response_text = response_text[4:]
-        response_text = response_text.strip()
+        return json.loads(response_text.strip())
+    except Exception as e:
+        logger.error(f"Claude API error: {e}")
+        raise HTTPException(status_code=500, detail=f"AI extraction failed: {str(e)}")
+
+# ===================
+# AUTH ROUTES
+# ===================
+
+@api_router.get("/auth/me")
+async def get_me(request: Request):
+    """Get current user info"""
+    session = await get_current_user(request)
+    return {
+        "user_id": session.get("user_id"),
+        "email": session.get("email"),
+        "name": session.get("name"),
+        "picture": session.get("picture"),
+        "google_connected": bool(session.get("google_access_token"))
+    }
+
+@api_router.post("/auth/session")
+async def create_session(request: Request, response: Response):
+    """Exchange session_id for session_token"""
+    body = await request.json()
+    session_id = body.get("session_id")
+    
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    
+    # Call Emergent Auth to get session data
+    async with httpx.AsyncClient() as client:
+        auth_response = await client.get(
+            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            headers={"X-Session-ID": session_id}
+        )
+    
+    if auth_response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid session_id")
+    
+    auth_data = auth_response.json()
+    
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=7)
+    
+    # Check if user exists
+    existing_user = await db.users.find_one({"email": auth_data["email"]}, {"_id": 0})
+    if existing_user:
+        user_id = existing_user["user_id"]
+    else:
+        # Create new user
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": auth_data["email"],
+            "name": auth_data["name"],
+            "picture": auth_data["picture"],
+            "created_at": now.isoformat()
+        })
+    
+    # Create session with Google tokens
+    session_doc = {
+        "user_id": user_id,
+        "email": auth_data["email"],
+        "name": auth_data["name"],
+        "picture": auth_data["picture"],
+        "session_token": auth_data["session_token"],
+        "google_access_token": auth_data.get("access_token", ""),
+        "google_refresh_token": auth_data.get("refresh_token", ""),
+        "expires_at": expires_at.isoformat(),
+        "created_at": now.isoformat()
+    }
+    
+    # Delete old sessions for this user
+    await db.user_sessions.delete_many({"user_id": user_id})
+    await db.user_sessions.insert_one(session_doc)
+    
+    # Set cookie
+    response.set_cookie(
+        key="session_token",
+        value=auth_data["session_token"],
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=7 * 24 * 60 * 60
+    )
+    
+    return {
+        "user_id": user_id,
+        "email": auth_data["email"],
+        "name": auth_data["name"],
+        "picture": auth_data["picture"]
+    }
+
+@api_router.post("/auth/logout")
+async def logout(request: Request, response: Response):
+    """Logout user"""
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        await db.user_sessions.delete_many({"session_token": session_token})
+    
+    response.delete_cookie(key="session_token", path="/")
+    return {"message": "Logged out"}
+
+@api_router.get("/auth/google-status")
+async def google_status(request: Request):
+    """Check if Google is connected and working"""
+    try:
+        session = await get_current_user(request)
+        credentials = get_google_credentials(session)
         
-        extracted_data = json.loads(response_text)
-        return extracted_data
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Claude response: {e}")
+        # Try to list files to verify connection
+        drive_service = build('drive', 'v3', credentials=credentials)
+        drive_service.files().list(pageSize=1).execute()
+        
+        return {"connected": True, "email": session.get("email")}
+    except Exception as e:
+        logger.error(f"Google status check failed: {e}")
+        return {"connected": False, "error": str(e)}
+
+# ===================
+# PROJECT ROUTES
+# ===================
+
+@api_router.get("/projects")
+async def get_projects(request: Request):
+    """Get all projects for current user"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        # Add contact/company counts
+        for p in projects:
+            try:
+                if p.get('contacts_sheet_id'):
+                    contacts = await read_sheet_data(credentials, p['contacts_sheet_id'])
+                    p['contact_count'] = len(contacts)
+                else:
+                    p['contact_count'] = 0
+                    
+                if p.get('companies_sheet_id'):
+                    companies = await read_sheet_data(credentials, p['companies_sheet_id'])
+                    p['company_count'] = len(companies)
+                else:
+                    p['company_count'] = 0
+            except:
+                p['contact_count'] = 0
+                p['company_count'] = 0
+        
+        return projects
+    except Exception as e:
+        logger.error(f"Error getting projects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/projects")
+async def create_project(project: ProjectCreate, request: Request):
+    """Create a new project with Google Sheets"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        project_id = str(uuid.uuid4())
+        
+        # Create folder structure
+        root_folder_id = await get_or_create_root_folder(credentials)
+        project_folder_id = await get_or_create_project_folder(credentials, root_folder_id, project.name)
+        
+        # Create sheets
+        contacts_sheet_id, companies_sheet_id = await setup_project_sheets(credentials, project_folder_id)
+        
+        # Add to projects sheet
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        
+        project_row = [
+            project_id, project.name, project_folder_id, contacts_sheet_id, companies_sheet_id,
+            project.notes or "", now, now
+        ]
+        await append_to_sheet(credentials, projects_sheet_id, project_row)
+        
         return {
-            "confidence_score": 0,
-            "ai_notes": f"Failed to parse extraction result: {str(e)}",
-            "validation_status": "error"
+            "id": project_id,
+            "name": project.name,
+            "folder_id": project_folder_id,
+            "contacts_sheet_id": contacts_sheet_id,
+            "companies_sheet_id": companies_sheet_id,
+            "notes": project.notes or "",
+            "created_at": now,
+            "updated_at": now,
+            "contact_count": 0,
+            "company_count": 0
         }
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Claude API error: {error_msg}")
-        # Check for specific error types
-        if "exceeds" in error_msg and "MB" in error_msg:
-            raise HTTPException(status_code=400, detail="Image too large. Please use a smaller image (max 5MB).")
-        elif "invalid_request_error" in error_msg:
-            raise HTTPException(status_code=400, detail="Invalid image format. Please use JPEG or PNG.")
+        logger.error(f"Error creating project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/projects/{project_id}")
+async def get_project(project_id: str, request: Request):
+    """Get a specific project"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get counts
+        if project.get('contacts_sheet_id'):
+            contacts = await read_sheet_data(credentials, project['contacts_sheet_id'])
+            project['contact_count'] = len(contacts)
         else:
-            raise HTTPException(status_code=500, detail=f"AI extraction failed: {error_msg}")
+            project['contact_count'] = 0
+            
+        if project.get('companies_sheet_id'):
+            companies = await read_sheet_data(credentials, project['companies_sheet_id'])
+            project['company_count'] = len(companies)
+        else:
+            project['company_count'] = 0
+        
+        return project
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-async def validate_contact_data(contact_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate extracted contact data using Claude"""
-    settings = await get_settings()
-    if not settings.get('ai_validation_enabled', True):
-        return {"validation_status": "skipped", "ai_notes": "AI validation disabled"}
-    
-    api_key = settings.get('anthropic_api_key') or get_api_key()
-    model = settings.get('claude_model', 'claude-sonnet-4-5-20250929')
-    
-    if not api_key:
-        return {"validation_status": "skipped", "ai_notes": "No API key"}
-    
-    system_prompt = """You are a data validation expert. Review the contact data and check for:
-    1. Job title mistakenly extracted as person name
-    2. City or address extracted as surname
-    3. Invalid email format
-    4. Invalid or malformed phone numbers
-    5. Invalid LinkedIn URL format
-    6. Mismatch between email domain and website
-    7. Confusion between brand and legal company name
-    
-    Return a JSON object with:
-    - validation_status: "valid", "needs_review", or "invalid"
-    - issues: list of detected issues
-    - suggestions: list of suggested corrections
-    - confidence_score: 0-100
-    Return ONLY valid JSON."""
-    
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"validate-{str(uuid.uuid4())}",
-        system_message=system_prompt
-    ).with_model("anthropic", model)
-    
-    user_message = UserMessage(
-        text=f"Validate this contact data and check for plausibility issues:\n{json.dumps(contact_data, indent=2)}"
-    )
+@api_router.delete("/projects/{project_id}")
+async def delete_project(project_id: str, request: Request):
+    """Delete a project"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
     
     try:
-        response = await chat.send_message(user_message)
-        response_text = response.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-        response_text = response_text.strip()
-        return json.loads(response_text)
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project_index = next((i for i, p in enumerate(projects) if p.get('id') == project_id), None)
+        if project_index is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        project = projects[project_index]
+        
+        # Delete project folder (and all contents)
+        if project.get('folder_id'):
+            drive_service = build('drive', 'v3', credentials=credentials)
+            drive_service.files().delete(fileId=project['folder_id']).execute()
+        
+        # Remove from projects sheet
+        await delete_sheet_row(credentials, projects_sheet_id, project_index)
+        
+        return {"message": "Project deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Validation error: {e}")
-        return {"validation_status": "error", "ai_notes": str(e)}
+        logger.error(f"Error deleting project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-async def detect_duplicates(project_id: str, contact_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Find potential duplicates for a contact"""
-    duplicates = []
-    
-    # Primary rule: same first + last + mobile
-    if contact_data.get('first_name') and contact_data.get('last_name') and contact_data.get('mobile_phone'):
-        cursor = db.contacts.find({
-            "project_id": project_id,
-            "first_name": contact_data['first_name'],
-            "last_name": contact_data['last_name'],
-            "mobile_phone": contact_data['mobile_phone']
-        }, {"_id": 0}).limit(10)
-        async for doc in cursor:
-            duplicates.append({"match": doc, "reason": "same_name_mobile", "confidence": 95})
-    
-    # Secondary: same first + last + email
-    if contact_data.get('first_name') and contact_data.get('last_name') and contact_data.get('primary_email'):
-        cursor = db.contacts.find({
-            "project_id": project_id,
-            "first_name": contact_data['first_name'],
-            "last_name": contact_data['last_name'],
-            "primary_email": contact_data['primary_email']
-        }, {"_id": 0}).limit(10)
-        async for doc in cursor:
-            if doc.get('id') not in [d['match'].get('id') for d in duplicates]:
-                duplicates.append({"match": doc, "reason": "same_name_email", "confidence": 90})
-    
-    # LinkedIn match
-    if contact_data.get('linkedin_url'):
-        cursor = db.contacts.find({
-            "project_id": project_id,
-            "linkedin_url": contact_data['linkedin_url']
-        }, {"_id": 0}).limit(10)
-        async for doc in cursor:
-            if doc.get('id') not in [d['match'].get('id') for d in duplicates]:
-                duplicates.append({"match": doc, "reason": "same_linkedin", "confidence": 95})
-    
-    return duplicates
+# ===================
+# CONTACTS ROUTES
+# ===================
 
-def convert_pdf_to_images(pdf_bytes: bytes, max_size: int = 1200) -> List[str]:
-    """Convert PDF pages to base64 encoded JPEG images, optimized for Claude"""
-    images_base64 = []
-    
-    # Open PDF with PyMuPDF
-    pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-    
-    for page_num in range(len(pdf_document)):
-        page = pdf_document[page_num]
-        
-        # Render at 100 DPI (lower = faster, still readable for OCR)
-        mat = fitz.Matrix(100/72, 100/72)
-        pix = page.get_pixmap(matrix=mat)
-        
-        # Convert to PIL Image
-        img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        # Resize if too large
-        if img.width > max_size or img.height > max_size:
-            ratio = min(max_size / img.width, max_size / img.height)
-            new_size = (int(img.width * ratio), int(img.height * ratio))
-            img = img.resize(new_size, PILImage.LANCZOS)
-        
-        # Convert to JPEG with lower quality (faster, smaller)
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=70, optimize=False)  # optimize=False is faster
-        
-        buffer.seek(0)
-        images_base64.append(base64.b64encode(buffer.read()).decode('utf-8'))
-    
-    pdf_document.close()
-    return images_base64
-
-async def extract_multiple_cards_from_page(image_base64: str, page_num: int = 1) -> List[Dict[str, Any]]:
-    """Extract ALL business cards from a single page image using ONE Claude call"""
-    settings = await get_settings()
-    api_key = settings.get('anthropic_api_key') or get_api_key()
-    model = settings.get('claude_model', 'claude-sonnet-4-5-20250929')
-    
-    if not api_key:
-        raise HTTPException(status_code=400, detail="No API key configured")
-    
-    system_prompt = """You are an expert at reading business cards in any language. This image contains MULTIPLE business cards arranged on a page.
-
-Your task:
-1. Identify ALL separate business cards visible in the image
-2. Extract complete information from EACH card
-3. Return a JSON ARRAY where each element is one contact
-
-For EACH business card found, extract:
-
-PERSONAL INFO:
-- first_name, middle_name, last_name, full_name_original
-
-PROFESSIONAL INFO:
-- job_title, department
-
-CONTACT INFO:
-- mobile_phone, direct_phone, office_phone
-- primary_email, secondary_email
-- linkedin_url, personal_website
-
-COMPANY INFO:
-- company_name_display (name shown on card)
-- brand_name (commercial/trading name if different)
-- legal_company_name (legal entity: Srl, SpA, Ltd, GmbH, Inc, etc.)
-- website
-
-ADDRESS INFO (IMPORTANT):
-- address (street, number, city, province - all in one line, e.g., "Via Roma 123, Milano, MI")
-- postal_code (ONLY the ZIP/CAP code, e.g., "20121")
-- country (country name, e.g., "Italy")
-
-METADATA:
-- industry (infer if possible)
-- confidence_score (0-100 for this specific card)
-- card_position (e.g., "top-left", "center", "bottom-right")
-- ai_notes (any issues or uncertainties)
-
-IMPORTANT RULES:
-- Return ONLY a valid JSON array: [{...}, {...}, ...]
-- Each object in the array is ONE business card
-- If you find 5 cards, return an array with 5 objects
-- Support ANY language on the cards (Italian, English, German, Chinese, etc.)
-- For ADDRESS: combine street, number, city, province into one "address" field
-- For POSTAL_CODE: extract ONLY the numeric/alphanumeric code
-- For COUNTRY: extract country name separately
-- If a card is partially visible, include it with lower confidence"""
-    
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"batch-{str(uuid.uuid4())}",
-        system_message=system_prompt
-    ).with_model("anthropic", model)
-    
-    user_message = UserMessage(
-        text=f"This is page {page_num}. Find ALL business cards in this image and extract the data from each one. Return a JSON array with one object per card found.",
-        file_contents=[ImageContent(image_base64=image_base64)]
-    )
+@api_router.get("/projects/{project_id}/contacts")
+async def get_contacts(project_id: str, request: Request, review_status: Optional[str] = None):
+    """Get all contacts for a project"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
     
     try:
-        response = await chat.send_message(user_message)
-        response_text = response.strip()
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
         
-        # Remove markdown code blocks if present
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            response_text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
-            if response_text.startswith("json"):
-                response_text = response_text[4:].strip()
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
         
-        # Parse JSON array
-        extracted_cards = json.loads(response_text)
+        contacts = await read_sheet_data(credentials, project['contacts_sheet_id'])
         
-        # Ensure it's a list
-        if isinstance(extracted_cards, dict):
-            extracted_cards = [extracted_cards]
+        # Filter by review_status if specified
+        if review_status:
+            contacts = [c for c in contacts if c.get('review_status') == review_status]
         
-        logger.info(f"Page {page_num}: Found {len(extracted_cards)} business cards")
-        return extracted_cards
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse batch response for page {page_num}: {e}")
-        return []
+        return contacts
+    except HTTPException:
+        raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Batch extraction error on page {page_num}: {error_msg}")
-        if "exceeds" in error_msg and "MB" in error_msg:
-            raise HTTPException(status_code=400, detail=f"Page {page_num} image too large")
-        raise HTTPException(status_code=500, detail=f"Failed to process page {page_num}: {error_msg}")
+        logger.error(f"Error getting contacts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-def generate_excel_workbook(project: Dict, contacts: List[Dict], companies: List[Dict], 
-                           import_logs: List[Dict], duplicates: List[Dict], ai_audits: List[Dict]) -> io.BytesIO:
-    """Generate master Excel workbook for a project"""
-    wb = Workbook()
+@api_router.post("/projects/{project_id}/contacts")
+async def create_contact(project_id: str, contact: ContactCreate, request: Request):
+    """Create a new contact"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
     
-    # Projects sheet
-    ws_projects = wb.active
-    ws_projects.title = "Projects"
-    ws_projects.append(["project_id", "project_name", "created_date", "created_time", "last_updated_date", "last_updated_time", "notes"])
-    created = datetime.fromisoformat(project['created_at'].replace('Z', '+00:00')) if isinstance(project['created_at'], str) else project['created_at']
-    updated = datetime.fromisoformat(project['updated_at'].replace('Z', '+00:00')) if isinstance(project['updated_at'], str) else project['updated_at']
-    ws_projects.append([
-        project['id'], project['name'],
-        created.strftime('%Y-%m-%d'), created.strftime('%H:%M:%S'),
-        updated.strftime('%Y-%m-%d'), updated.strftime('%H:%M:%S'),
-        project.get('notes', '')
-    ])
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        now = datetime.now(timezone.utc).isoformat()
+        contact_id = str(uuid.uuid4())
+        
+        contact_data = contact.model_dump()
+        contact_data['id'] = contact_id
+        contact_data['created_at'] = now
+        contact_data['updated_at'] = now
+        
+        # Create row data matching headers
+        row_data = [str(contact_data.get(h, '')) for h in CONTACT_HEADERS]
+        await append_to_sheet(credentials, project['contacts_sheet_id'], row_data)
+        
+        return contact_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/projects/{project_id}/contacts/{contact_id}")
+async def get_contact(project_id: str, contact_id: str, request: Request):
+    """Get a specific contact"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
     
-    # Contacts sheet
-    ws_contacts = wb.create_sheet("Contacts")
-    contact_headers = ["contact_id", "project_id", "first_name", "middle_name", "last_name", "full_name", 
-                       "full_name_original", "job_title", "department", "mobile_phone", "direct_phone",
-                       "office_phone", "primary_email", "secondary_email", "linkedin_url", "personal_website",
-                       "company_id", "company_name_display", "brand_name", "legal_company_name",
-                       "import_source_type", "import_source_file", "source_image_front", "source_image_back",
-                       "confidence_score", "validation_status", "review_status", "duplicate_status",
-                       "ai_notes", "created_at", "updated_at", "notes"]
-    ws_contacts.append(contact_headers)
-    for c in contacts:
-        ws_contacts.append([c.get(h.replace('contact_id', 'id'), '') for h in contact_headers])
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        contacts = await read_sheet_data(credentials, project['contacts_sheet_id'])
+        contact = next((c for c in contacts if c.get('id') == contact_id), None)
+        
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        
+        return contact
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.put("/projects/{project_id}/contacts/{contact_id}")
+async def update_contact(project_id: str, contact_id: str, contact: ContactCreate, request: Request):
+    """Update a contact"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
     
-    # Companies sheet
-    ws_companies = wb.create_sheet("Companies")
-    company_headers = ["company_id", "project_id", "legal_company_name", "brand_name", "company_display_name",
-                       "website", "main_phone", "main_email", "address", "city", "postal_code",
-                       "province_region", "country", "industry", "legal_name_confidence", "brand_name_confidence",
-                       "validation_status", "enrichment_notes", "created_at", "updated_at", "notes"]
-    ws_companies.append(company_headers)
-    for c in companies:
-        ws_companies.append([c.get(h.replace('company_id', 'id'), '') for h in company_headers])
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        contacts = await read_sheet_data(credentials, project['contacts_sheet_id'])
+        contact_index = next((i for i, c in enumerate(contacts) if c.get('id') == contact_id), None)
+        
+        if contact_index is None:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        
+        now = datetime.now(timezone.utc).isoformat()
+        contact_data = contact.model_dump()
+        contact_data['id'] = contact_id
+        contact_data['created_at'] = contacts[contact_index].get('created_at', now)
+        contact_data['updated_at'] = now
+        
+        row_data = [str(contact_data.get(h, '')) for h in CONTACT_HEADERS]
+        await update_sheet_row(credentials, project['contacts_sheet_id'], contact_index, row_data)
+        
+        return contact_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/projects/{project_id}/contacts/{contact_id}")
+async def delete_contact(project_id: str, contact_id: str, request: Request):
+    """Delete a contact"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
     
-    # Import_Log sheet
-    ws_import = wb.create_sheet("Import_Log")
-    import_headers = ["batch_id", "project_id", "source_type", "file_name", "import_datetime",
-                      "rows_imported", "rows_created", "rows_merged", "rows_flagged", "errors"]
-    ws_import.append(import_headers)
-    for log in import_logs:
-        ws_import.append([log.get(h, '') for h in import_headers])
-    
-    # Duplicates_Review sheet
-    ws_duplicates = wb.create_sheet("Duplicates_Review")
-    dup_headers = ["duplicate_group_id", "project_id", "record_type", "candidate_record_ids",
-                   "duplicate_reason", "confidence_score", "decision_status", "decided_by", "decision_datetime"]
-    ws_duplicates.append(dup_headers)
-    for d in duplicates:
-        row = [d.get(h, '') for h in dup_headers]
-        row[3] = ','.join(d.get('candidate_ids', []))  # Convert list to string
-        ws_duplicates.append(row)
-    
-    # AI_Audit sheet
-    ws_audit = wb.create_sheet("AI_Audit")
-    audit_headers = ["record_id", "record_type", "task_type", "claude_model",
-                     "confidence_score", "ai_notes", "manual_override", "timestamp"]
-    ws_audit.append(audit_headers)
-    for a in ai_audits:
-        ws_audit.append([a.get(h, '') for h in audit_headers])
-    
-    # Save to BytesIO
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        contacts = await read_sheet_data(credentials, project['contacts_sheet_id'])
+        contact_index = next((i for i, c in enumerate(contacts) if c.get('id') == contact_id), None)
+        
+        if contact_index is None:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        
+        await delete_sheet_row(credentials, project['contacts_sheet_id'], contact_index)
+        
+        return {"message": "Contact deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ===================
-# API ROUTES
+# COMPANIES ROUTES
 # ===================
 
-@api_router.get("/")
-async def root():
-    return {"message": "BizScan Pro API", "version": "1.0.0"}
+@api_router.get("/projects/{project_id}/companies")
+async def get_companies(project_id: str, request: Request):
+    """Get all companies for a project"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        companies = await read_sheet_data(credentials, project['companies_sheet_id'])
+        return companies
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting companies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- Settings ---
-@api_router.get("/settings", response_model=SettingsResponse)
-async def get_settings_endpoint():
-    settings = await get_settings()
-    return SettingsResponse(**settings)
+@api_router.delete("/projects/{project_id}/companies/{company_id}")
+async def delete_company(project_id: str, company_id: str, request: Request):
+    """Delete a company"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        companies = await read_sheet_data(credentials, project['companies_sheet_id'])
+        company_index = next((i for i, c in enumerate(companies) if c.get('id') == company_id), None)
+        
+        if company_index is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        
+        await delete_sheet_row(credentials, project['companies_sheet_id'], company_index)
+        
+        return {"message": "Company deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting company: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.post("/settings", response_model=SettingsResponse)
-async def update_settings(settings: SettingsUpdate):
-    current = await get_settings()
+# ===================
+# SCAN ROUTES
+# ===================
+
+@api_router.post("/projects/{project_id}/scan")
+async def scan_business_card(project_id: str, scan: ScanRequest, request: Request):
+    """Scan a business card and extract data"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Extract data using Claude
+        extracted_data = await extract_business_card_data(
+            scan.image_front, 
+            scan.image_back, 
+            session['user_id']
+        )
+        
+        now = datetime.now(timezone.utc).isoformat()
+        contact_id = str(uuid.uuid4())
+        
+        # Build contact data
+        contact_data = {
+            "id": contact_id,
+            "first_name": extracted_data.get('first_name', ''),
+            "middle_name": extracted_data.get('middle_name', ''),
+            "last_name": extracted_data.get('last_name', ''),
+            "full_name": f"{extracted_data.get('first_name', '')} {extracted_data.get('last_name', '')}".strip(),
+            "full_name_original": extracted_data.get('full_name_original', ''),
+            "job_title": extracted_data.get('job_title', ''),
+            "department": extracted_data.get('department', ''),
+            "mobile_phone": extracted_data.get('mobile_phone', ''),
+            "direct_phone": extracted_data.get('direct_phone', ''),
+            "office_phone": extracted_data.get('office_phone', ''),
+            "primary_email": extracted_data.get('primary_email', ''),
+            "secondary_email": extracted_data.get('secondary_email', ''),
+            "linkedin_url": extracted_data.get('linkedin_url', ''),
+            "personal_website": extracted_data.get('personal_website', ''),
+            "company_id": "",
+            "company_name_display": extracted_data.get('company_name_display', ''),
+            "brand_name": extracted_data.get('brand_name', ''),
+            "legal_company_name": extracted_data.get('legal_company_name', ''),
+            "address": extracted_data.get('address', ''),
+            "postal_code": extracted_data.get('postal_code', ''),
+            "country": extracted_data.get('country', ''),
+            "import_source_type": "scan",
+            "import_source_file": "",
+            "confidence_score": str(extracted_data.get('confidence_score', 0)),
+            "validation_status": "pending",
+            "review_status": "needs_review" if extracted_data.get('confidence_score', 0) < 80 else "approved",
+            "duplicate_status": "none",
+            "ai_notes": extracted_data.get('ai_notes', ''),
+            "notes": "",
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        # Save contact to sheet
+        row_data = [str(contact_data.get(h, '')) for h in CONTACT_HEADERS]
+        await append_to_sheet(credentials, project['contacts_sheet_id'], row_data)
+        
+        # Create company if present
+        company_data = None
+        if extracted_data.get('company_name_display') or extracted_data.get('brand_name'):
+            company_id = str(uuid.uuid4())
+            company_data = {
+                "id": company_id,
+                "legal_company_name": extracted_data.get('legal_company_name', ''),
+                "brand_name": extracted_data.get('brand_name', ''),
+                "company_display_name": extracted_data.get('company_name_display', ''),
+                "website": extracted_data.get('website', ''),
+                "main_phone": extracted_data.get('office_phone', ''),
+                "main_email": "",
+                "address": extracted_data.get('address', ''),
+                "city": "",
+                "postal_code": extracted_data.get('postal_code', ''),
+                "province_region": "",
+                "country": extracted_data.get('country', ''),
+                "industry": extracted_data.get('industry', ''),
+                "validation_status": "pending",
+                "notes": "",
+                "created_at": now,
+                "updated_at": now
+            }
+            
+            company_row = [str(company_data.get(h, '')) for h in COMPANY_HEADERS]
+            await append_to_sheet(credentials, project['companies_sheet_id'], company_row)
+        
+        return {
+            "contact": contact_data,
+            "company": company_data,
+            "extracted_data": extracted_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error scanning card: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ===================
+# REVIEW & DUPLICATES
+# ===================
+
+@api_router.get("/projects/{project_id}/review")
+async def get_review_queue(project_id: str, request: Request):
+    """Get contacts needing review"""
+    return await get_contacts(project_id, request, review_status="needs_review")
+
+@api_router.post("/projects/{project_id}/contacts/{contact_id}/approve")
+async def approve_contact(project_id: str, contact_id: str, request: Request):
+    """Approve a contact"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        contacts = await read_sheet_data(credentials, project['contacts_sheet_id'])
+        contact_index = next((i for i, c in enumerate(contacts) if c.get('id') == contact_id), None)
+        
+        if contact_index is None:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        
+        contact = contacts[contact_index]
+        contact['review_status'] = 'approved'
+        contact['updated_at'] = datetime.now(timezone.utc).isoformat()
+        
+        row_data = [str(contact.get(h, '')) for h in CONTACT_HEADERS]
+        await update_sheet_row(credentials, project['contacts_sheet_id'], contact_index, row_data)
+        
+        return {"message": "Contact approved"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/projects/{project_id}/contacts/{contact_id}/reject")
+async def reject_contact(project_id: str, contact_id: str, request: Request):
+    """Reject a contact - deletes from sheet"""
+    return await delete_contact(project_id, contact_id, request)
+
+@api_router.get("/projects/{project_id}/duplicates")
+async def get_duplicates(project_id: str, request: Request):
+    """Get contacts flagged as duplicates"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
+    
+    try:
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
+        
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        contacts = await read_sheet_data(credentials, project['contacts_sheet_id'])
+        duplicates = [c for c in contacts if c.get('duplicate_status') == 'potential_duplicate']
+        
+        return duplicates
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting duplicates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/projects/{project_id}/duplicates/{contact_id}")
+async def delete_duplicate(project_id: str, contact_id: str, request: Request):
+    """Delete a duplicate contact"""
+    return await delete_contact(project_id, contact_id, request)
+
+# ===================
+# SETTINGS
+# ===================
+
+@api_router.get("/settings")
+async def get_settings(request: Request):
+    """Get user settings"""
+    session = await get_current_user(request)
+    settings = await get_user_settings(session['user_id'])
+    return settings
+
+@api_router.post("/settings")
+async def update_settings(settings: SettingsUpdate, request: Request):
+    """Update user settings"""
+    session = await get_current_user(request)
+    
     update_data = settings.model_dump(exclude_unset=True)
-    current.update(update_data)
-    current['connection_status'] = 'not_tested'
+    update_data['user_id'] = session['user_id']
     
-    await db.settings.update_one({}, {"$set": current}, upsert=True)
-    return SettingsResponse(**current)
+    await db.user_settings.update_one(
+        {"user_id": session['user_id']},
+        {"$set": update_data},
+        upsert=True
+    )
+    
+    return await get_user_settings(session['user_id'])
 
 @api_router.post("/settings/test-connection")
-async def test_connection():
+async def test_claude_connection(request: Request):
     """Test Claude API connection"""
-    settings = await get_settings()
+    session = await get_current_user(request)
+    settings = await get_user_settings(session['user_id'])
+    
     api_key = settings.get('anthropic_api_key') or get_api_key()
     model = settings.get('claude_model', 'claude-sonnet-4-5-20250929')
     
@@ -688,820 +1129,58 @@ async def test_connection():
             system_message="You are a test assistant."
         ).with_model("anthropic", model)
         
-        response = await chat.send_message(UserMessage(text="Say 'Connection successful!' and nothing else."))
-        
-        await db.settings.update_one({}, {"$set": {"connection_status": "connected"}}, upsert=True)
+        response = await chat.send_message(UserMessage(text="Say 'Connection successful!'"))
         return {"status": "success", "message": response.strip(), "model": model}
     except Exception as e:
-        await db.settings.update_one({}, {"$set": {"connection_status": "error"}}, upsert=True)
         return {"status": "error", "message": str(e)}
 
-# --- Projects ---
-@api_router.get("/projects", response_model=List[ProjectResponse])
-async def get_projects():
-    projects = await db.projects.find({}, {"_id": 0}).to_list(1000)
-    
-    if not projects:
-        return projects
-    
-    # Get all project IDs
-    project_ids = [p['id'] for p in projects]
-    
-    # Get contact counts in batch
-    contact_counts = {}
-    contact_pipeline = [
-        {"$match": {"project_id": {"$in": project_ids}}},
-        {"$group": {"_id": "$project_id", "count": {"$sum": 1}}}
-    ]
-    async for doc in db.contacts.aggregate(contact_pipeline):
-        contact_counts[doc['_id']] = doc['count']
-    
-    # Get company counts in batch
-    company_counts = {}
-    company_pipeline = [
-        {"$match": {"project_id": {"$in": project_ids}}},
-        {"$group": {"_id": "$project_id", "count": {"$sum": 1}}}
-    ]
-    async for doc in db.companies.aggregate(company_pipeline):
-        company_counts[doc['_id']] = doc['count']
-    
-    # Assign counts to projects
-    for p in projects:
-        p['contact_count'] = contact_counts.get(p['id'], 0)
-        p['company_count'] = company_counts.get(p['id'], 0)
-    
-    return projects
+# ===================
+# EXPORT
+# ===================
 
-@api_router.post("/projects", response_model=ProjectResponse)
-async def create_project(project: ProjectCreate):
-    now = datetime.now(timezone.utc).isoformat()
-    project_doc = {
-        "id": str(uuid.uuid4()),
-        "name": project.name,
-        "notes": project.notes or "",
-        "created_at": now,
-        "updated_at": now
-    }
-    await db.projects.insert_one(project_doc)
-    project_doc.pop('_id', None)
-    project_doc['contact_count'] = 0
-    project_doc['company_count'] = 0
-    return project_doc
-
-@api_router.get("/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str):
-    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    project['contact_count'] = await db.contacts.count_documents({"project_id": project_id})
-    project['company_count'] = await db.companies.count_documents({"project_id": project_id})
-    return project
-
-@api_router.delete("/projects/{project_id}")
-async def delete_project(project_id: str):
-    result = await db.projects.delete_one({"id": project_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Project not found")
-    # Clean up related data
-    await db.contacts.delete_many({"project_id": project_id})
-    await db.companies.delete_many({"project_id": project_id})
-    await db.import_logs.delete_many({"project_id": project_id})
-    await db.duplicates.delete_many({"project_id": project_id})
-    return {"message": "Project deleted"}
-
-# --- Contacts ---
-@api_router.get("/projects/{project_id}/contacts", response_model=List[ContactResponse])
-async def get_contacts(project_id: str, review_status: Optional[str] = None):
-    query = {"project_id": project_id}
-    if review_status:
-        query["review_status"] = review_status
-    contacts = await db.contacts.find(query, {"_id": 0}).to_list(10000)
-    return contacts
-
-@api_router.post("/projects/{project_id}/contacts", response_model=ContactResponse)
-async def create_contact(project_id: str, contact: ContactCreate):
-    now = datetime.now(timezone.utc).isoformat()
-    contact_doc = contact.model_dump()
-    contact_doc['id'] = str(uuid.uuid4())
-    contact_doc['project_id'] = project_id
-    contact_doc['created_at'] = now
-    contact_doc['updated_at'] = now
-    
-    # Set defaults for empty strings
-    for key in contact_doc:
-        if contact_doc[key] is None:
-            contact_doc[key] = ""
-    
-    await db.contacts.insert_one(contact_doc)
-    contact_doc.pop('_id', None)
-    
-    # Update project timestamp
-    await db.projects.update_one({"id": project_id}, {"$set": {"updated_at": now}})
-    
-    return contact_doc
-
-@api_router.get("/projects/{project_id}/contacts/{contact_id}", response_model=ContactResponse)
-async def get_contact(project_id: str, contact_id: str):
-    contact = await db.contacts.find_one({"id": contact_id, "project_id": project_id}, {"_id": 0})
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    return contact
-
-@api_router.put("/projects/{project_id}/contacts/{contact_id}", response_model=ContactResponse)
-async def update_contact(project_id: str, contact_id: str, contact: ContactCreate):
-    now = datetime.now(timezone.utc).isoformat()
-    update_data = contact.model_dump(exclude_unset=True)
-    update_data['updated_at'] = now
-    
-    result = await db.contacts.update_one(
-        {"id": contact_id, "project_id": project_id},
-        {"$set": update_data}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    
-    updated = await db.contacts.find_one({"id": contact_id}, {"_id": 0})
-    await db.projects.update_one({"id": project_id}, {"$set": {"updated_at": now}})
-    return updated
-
-@api_router.delete("/projects/{project_id}/contacts/{contact_id}")
-async def delete_contact(project_id: str, contact_id: str):
-    result = await db.contacts.delete_one({"id": contact_id, "project_id": project_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    return {"message": "Contact deleted"}
-
-# --- Companies ---
-@api_router.get("/projects/{project_id}/companies", response_model=List[CompanyResponse])
-async def get_companies(project_id: str):
-    companies = await db.companies.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
-    return companies
-
-@api_router.post("/projects/{project_id}/companies", response_model=CompanyResponse)
-async def create_company(project_id: str, company: CompanyCreate):
-    now = datetime.now(timezone.utc).isoformat()
-    company_doc = company.model_dump()
-    company_doc['id'] = str(uuid.uuid4())
-    company_doc['project_id'] = project_id
-    company_doc['created_at'] = now
-    company_doc['updated_at'] = now
-    
-    for key in company_doc:
-        if company_doc[key] is None:
-            company_doc[key] = ""
-    
-    await db.companies.insert_one(company_doc)
-    company_doc.pop('_id', None)
-    
-    await db.projects.update_one({"id": project_id}, {"$set": {"updated_at": now}})
-    return company_doc
-
-@api_router.put("/projects/{project_id}/companies/{company_id}", response_model=CompanyResponse)
-async def update_company(project_id: str, company_id: str, company: CompanyCreate):
-    now = datetime.now(timezone.utc).isoformat()
-    update_data = company.model_dump(exclude_unset=True)
-    update_data['updated_at'] = now
-    
-    result = await db.companies.update_one(
-        {"id": company_id, "project_id": project_id},
-        {"$set": update_data}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Company not found")
-    
-    updated = await db.companies.find_one({"id": company_id}, {"_id": 0})
-    return updated
-
-@api_router.delete("/projects/{project_id}/companies/{company_id}")
-async def delete_company(project_id: str, company_id: str):
-    result = await db.companies.delete_one({"id": company_id, "project_id": project_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Company not found")
-    return {"message": "Company deleted"}
-
-# --- Scanning ---
-@api_router.post("/projects/{project_id}/scan")
-async def scan_business_card(project_id: str, scan: ScanRequest):
-    """Scan a business card and extract contact data"""
-    # Verify project exists
-    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # Extract data using Claude
-    extracted_data = await extract_business_card_data(scan.image_front, scan.image_back)
-    
-    # Validate the extracted data
-    validation_result = await validate_contact_data(extracted_data)
-    
-    # Check for duplicates
-    duplicates = await detect_duplicates(project_id, extracted_data)
-    
-    # Prepare contact data
-    now = datetime.now(timezone.utc).isoformat()
-    contact_doc = {
-        "id": str(uuid.uuid4()),
-        "project_id": project_id,
-        "first_name": extracted_data.get('first_name', ''),
-        "middle_name": extracted_data.get('middle_name', ''),
-        "last_name": extracted_data.get('last_name', ''),
-        "full_name": f"{extracted_data.get('first_name', '')} {extracted_data.get('last_name', '')}".strip(),
-        "full_name_original": extracted_data.get('full_name_original', ''),
-        "job_title": extracted_data.get('job_title', ''),
-        "department": extracted_data.get('department', ''),
-        "mobile_phone": extracted_data.get('mobile_phone', ''),
-        "direct_phone": extracted_data.get('direct_phone', ''),
-        "office_phone": extracted_data.get('office_phone', ''),
-        "primary_email": extracted_data.get('primary_email', ''),
-        "secondary_email": extracted_data.get('secondary_email', ''),
-        "linkedin_url": extracted_data.get('linkedin_url', ''),
-        "personal_website": extracted_data.get('personal_website', ''),
-        "company_id": "",
-        "company_name_display": extracted_data.get('company_name_display', ''),
-        "brand_name": extracted_data.get('brand_name', ''),
-        "legal_company_name": extracted_data.get('legal_company_name', ''),
-        "address": extracted_data.get('address', ''),
-        "postal_code": extracted_data.get('postal_code', ''),
-        "country": extracted_data.get('country', ''),
-        "import_source_type": "scan",
-        "import_source_file": "",
-        "source_image_front": scan.image_front[:100] + "..." if len(scan.image_front) > 100 else scan.image_front,
-        "source_image_back": (scan.image_back[:100] + "..." if scan.image_back and len(scan.image_back) > 100 else (scan.image_back or "")),
-        "confidence_score": extracted_data.get('confidence_score', 0),
-        "validation_status": validation_result.get('validation_status', 'pending'),
-        "review_status": "needs_review" if extracted_data.get('confidence_score', 0) < 80 else "approved",
-        "duplicate_status": "potential_duplicate" if duplicates else "none",
-        "ai_notes": extracted_data.get('ai_notes', '') + "\n" + validation_result.get('ai_notes', ''),
-        "notes": "",
-        "created_at": now,
-        "updated_at": now
-    }
-    
-    # Save contact
-    await db.contacts.insert_one(contact_doc)
-    contact_doc.pop('_id', None)
-    
-    # Create or update company if company info exists
-    company_doc = None
-    if extracted_data.get('company_name_display') or extracted_data.get('brand_name'):
-        company_doc = {
-            "id": str(uuid.uuid4()),
-            "project_id": project_id,
-            "legal_company_name": extracted_data.get('legal_company_name', ''),
-            "brand_name": extracted_data.get('brand_name', ''),
-            "company_display_name": extracted_data.get('company_name_display', ''),
-            "website": extracted_data.get('website', ''),
-            "main_phone": extracted_data.get('office_phone', ''),
-            "main_email": "",
-            "address": extracted_data.get('address', ''),
-            "city": extracted_data.get('city', ''),
-            "postal_code": extracted_data.get('postal_code', ''),
-            "province_region": extracted_data.get('province_region', ''),
-            "country": extracted_data.get('country', ''),
-            "industry": extracted_data.get('industry', ''),
-            "legal_name_confidence": 50 if extracted_data.get('legal_company_name') else 0,
-            "brand_name_confidence": 80 if extracted_data.get('brand_name') else 0,
-            "validation_status": "pending",
-            "enrichment_notes": "",
-            "notes": "",
-            "created_at": now,
-            "updated_at": now
-        }
-        await db.companies.insert_one(company_doc)
-        company_doc.pop('_id', None)
-        
-        # Link contact to company
-        await db.contacts.update_one({"id": contact_doc['id']}, {"$set": {"company_id": company_doc['id']}})
-        contact_doc['company_id'] = company_doc['id']
-    
-    # Log AI audit
-    await db.ai_audits.insert_one({
-        "record_id": contact_doc['id'],
-        "record_type": "contact",
-        "task_type": "scan_extraction",
-        "claude_model": (await get_settings()).get('claude_model', 'claude-sonnet-4-5-20250929'),
-        "confidence_score": extracted_data.get('confidence_score', 0),
-        "ai_notes": extracted_data.get('ai_notes', ''),
-        "manual_override": False,
-        "timestamp": now
-    })
-    
-    # Update project timestamp
-    await db.projects.update_one({"id": project_id}, {"$set": {"updated_at": now}})
-    
-    return {
-        "contact": contact_doc,
-        "company": company_doc,
-        "validation": validation_result,
-        "duplicates": duplicates,
-        "extracted_data": extracted_data
-    }
-
-# --- Batch PDF Scan ---
-@api_router.post("/projects/{project_id}/scan/batch")
-async def scan_batch_pdf(project_id: str, file: UploadFile = File(...)):
-    """Process a PDF with multiple business cards per page"""
-    # Verify project exists
-    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # Read and validate file
-    content = await file.read()
-    filename = file.filename.lower()
-    
-    if not filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported for batch scanning")
-    
-    # Check file size (max 50MB for PDF)
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="PDF file too large (max 50MB)")
-    
-    now = datetime.now(timezone.utc).isoformat()
-    batch_id = str(uuid.uuid4())
+@api_router.get("/projects/{project_id}/export")
+async def export_project(project_id: str, format: str = "xlsx", request: Request = None):
+    """Export project data - redirects to Google Sheet"""
+    session = await get_current_user(request)
+    credentials = get_google_credentials(session)
     
     try:
-        # Convert PDF pages to images
-        logger.info(f"Converting PDF '{file.filename}' to images...")
-        page_images = convert_pdf_to_images(content)
-        total_pages = len(page_images)
-        logger.info(f"PDF has {total_pages} pages")
+        root_folder_id = await get_or_create_root_folder(credentials)
+        projects_sheet_id = await get_projects_sheet_id(credentials, root_folder_id)
+        projects = await read_sheet_data(credentials, projects_sheet_id)
         
-        if total_pages == 0:
-            raise HTTPException(status_code=400, detail="PDF has no pages")
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
         
-        # Process each page
-        all_contacts = []
-        all_companies = []
-        total_cards_found = 0
-        page_results = []
-        
-        for page_num, page_image in enumerate(page_images, 1):
-            logger.info(f"Processing page {page_num}/{total_pages}...")
-            
-            try:
-                # Extract all cards from this page in ONE Claude call
-                extracted_cards = await extract_multiple_cards_from_page(page_image, page_num)
-                cards_on_page = len(extracted_cards)
-                total_cards_found += cards_on_page
-                
-                # Create contact records for each card
-                for card_index, card_data in enumerate(extracted_cards):
-                    contact_doc = {
-                        "id": str(uuid.uuid4()),
-                        "project_id": project_id,
-                        "first_name": card_data.get('first_name', ''),
-                        "middle_name": card_data.get('middle_name', ''),
-                        "last_name": card_data.get('last_name', ''),
-                        "full_name": f"{card_data.get('first_name', '')} {card_data.get('last_name', '')}".strip(),
-                        "full_name_original": card_data.get('full_name_original', ''),
-                        "job_title": card_data.get('job_title', ''),
-                        "department": card_data.get('department', ''),
-                        "mobile_phone": card_data.get('mobile_phone', ''),
-                        "direct_phone": card_data.get('direct_phone', ''),
-                        "office_phone": card_data.get('office_phone', ''),
-                        "primary_email": card_data.get('primary_email', ''),
-                        "secondary_email": card_data.get('secondary_email', ''),
-                        "linkedin_url": card_data.get('linkedin_url', ''),
-                        "personal_website": card_data.get('personal_website', ''),
-                        "company_id": "",
-                        "company_name_display": card_data.get('company_name_display', ''),
-                        "brand_name": card_data.get('brand_name', ''),
-                        "legal_company_name": card_data.get('legal_company_name', ''),
-                        "address": card_data.get('address', ''),
-                        "postal_code": card_data.get('postal_code', ''),
-                        "country": card_data.get('country', ''),
-                        "import_source_type": "pdf_batch",
-                        "import_source_file": file.filename,
-                        "source_image_front": f"page_{page_num}_card_{card_index + 1}",
-                        "source_image_back": "",
-                        "confidence_score": card_data.get('confidence_score', 70),
-                        "validation_status": "pending",
-                        "review_status": "needs_review" if card_data.get('confidence_score', 70) < 80 else "pending",
-                        "duplicate_status": "none",
-                        "ai_notes": card_data.get('ai_notes', '') + f" [Page {page_num}, Position: {card_data.get('card_position', 'unknown')}]",
-                        "notes": "",
-                        "created_at": now,
-                        "updated_at": now
-                    }
-                    
-                    # Check for duplicates
-                    dups = await detect_duplicates(project_id, contact_doc)
-                    if dups:
-                        contact_doc['duplicate_status'] = 'potential_duplicate'
-                        contact_doc['review_status'] = 'needs_review'
-                    
-                    await db.contacts.insert_one(contact_doc)
-                    contact_doc.pop('_id', None)
-                    all_contacts.append(contact_doc)
-                    
-                    # Create company if applicable
-                    if card_data.get('company_name_display') or card_data.get('brand_name'):
-                        company_doc = {
-                            "id": str(uuid.uuid4()),
-                            "project_id": project_id,
-                            "legal_company_name": card_data.get('legal_company_name', ''),
-                            "brand_name": card_data.get('brand_name', ''),
-                            "company_display_name": card_data.get('company_name_display', ''),
-                            "website": card_data.get('website', ''),
-                            "main_phone": card_data.get('office_phone', ''),
-                            "main_email": "",
-                            "address": card_data.get('address', ''),
-                            "city": card_data.get('city', ''),
-                            "postal_code": card_data.get('postal_code', ''),
-                            "province_region": card_data.get('province_region', ''),
-                            "country": card_data.get('country', ''),
-                            "industry": card_data.get('industry', ''),
-                            "legal_name_confidence": 50 if card_data.get('legal_company_name') else 0,
-                            "brand_name_confidence": 80 if card_data.get('brand_name') else 0,
-                            "validation_status": "pending",
-                            "enrichment_notes": "",
-                            "notes": "",
-                            "created_at": now,
-                            "updated_at": now
-                        }
-                        await db.companies.insert_one(company_doc)
-                        company_doc.pop('_id', None)
-                        all_companies.append(company_doc)
-                        
-                        # Link contact to company
-                        await db.contacts.update_one({"id": contact_doc['id']}, {"$set": {"company_id": company_doc['id']}})
-                
-                page_results.append({"page": page_num, "cards_found": cards_on_page, "status": "success"})
-                
-            except Exception as e:
-                logger.error(f"Error processing page {page_num}: {e}")
-                page_results.append({"page": page_num, "cards_found": 0, "status": "error", "error": str(e)})
-        
-        # Log import
-        import_log = {
-            "batch_id": batch_id,
-            "project_id": project_id,
-            "source_type": "pdf_batch",
-            "file_name": file.filename,
-            "import_datetime": now,
-            "rows_imported": total_cards_found,
-            "rows_created": len(all_contacts),
-            "rows_merged": 0,
-            "rows_flagged": sum(1 for c in all_contacts if c.get('review_status') == 'needs_review'),
-            "errors": json.dumps([p for p in page_results if p['status'] == 'error'])
-        }
-        await db.import_logs.insert_one(import_log)
-        
-        # Update project timestamp
-        await db.projects.update_one({"id": project_id}, {"$set": {"updated_at": now}})
-        
+        # Return links to Google Sheets
         return {
-            "batch_id": batch_id,
-            "total_pages": total_pages,
-            "total_cards_found": total_cards_found,
-            "contacts_created": len(all_contacts),
-            "companies_created": len(all_companies),
-            "page_results": page_results,
-            "needs_review": sum(1 for c in all_contacts if c.get('review_status') == 'needs_review')
+            "project_name": project.get('name'),
+            "contacts_sheet_url": f"https://docs.google.com/spreadsheets/d/{project.get('contacts_sheet_id')}",
+            "companies_sheet_url": f"https://docs.google.com/spreadsheets/d/{project.get('companies_sheet_id')}",
+            "folder_url": f"https://drive.google.com/drive/folders/{project.get('folder_id')}"
         }
-        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Batch PDF processing error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
+        logger.error(f"Error exporting: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- Import ---
-@api_router.post("/projects/{project_id}/import/preview")
-async def preview_import(project_id: str, file: UploadFile = File(...)):
-    """Preview an Excel/CSV file before importing"""
-    content = await file.read()
-    filename = file.filename.lower()
-    
-    try:
-        if filename.endswith('.csv'):
-            df = pd.read_csv(io.BytesIO(content))
-        elif filename.endswith('.xlsx'):
-            df = pd.read_excel(io.BytesIO(content), engine='openpyxl')
-        elif filename.endswith('.xls'):
-            df = pd.read_excel(io.BytesIO(content), engine='xlrd')
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file format. Use CSV, XLSX, or XLS.")
-        
-        # Get column names and sample data
-        columns = df.columns.tolist()
-        sample_rows = df.head(5).fillna('').to_dict('records')
-        row_count = len(df)
-        
-        # Suggested mappings
-        target_fields = [
-            "first_name", "middle_name", "last_name", "full_name", "job_title", 
-            "department", "mobile_phone", "direct_phone", "office_phone",
-            "primary_email", "secondary_email", "linkedin_url", "personal_website",
-            "company_name_display", "brand_name", "legal_company_name",
-            "address", "city", "postal_code", "province_region", "country", "notes"
-        ]
-        
-        # Auto-suggest mappings
-        suggested_mappings = {}
-        for col in columns:
-            col_lower = col.lower().replace(' ', '_').replace('-', '_')
-            for field in target_fields:
-                if field in col_lower or col_lower in field:
-                    suggested_mappings[col] = field
-                    break
-            # Common variations
-            if 'email' in col_lower and col not in suggested_mappings:
-                suggested_mappings[col] = 'primary_email'
-            if 'phone' in col_lower and 'mobile' in col_lower and col not in suggested_mappings:
-                suggested_mappings[col] = 'mobile_phone'
-            if 'phone' in col_lower and col not in suggested_mappings:
-                suggested_mappings[col] = 'office_phone'
-            if 'company' in col_lower and col not in suggested_mappings:
-                suggested_mappings[col] = 'company_name_display'
-        
-        return {
-            "filename": file.filename,
-            "columns": columns,
-            "sample_rows": sample_rows,
-            "row_count": row_count,
-            "suggested_mappings": suggested_mappings,
-            "target_fields": target_fields
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
+# ===================
+# ROOT
+# ===================
 
-@api_router.post("/projects/{project_id}/import")
-async def import_file(
-    project_id: str,
-    file: UploadFile = File(...),
-    column_mapping: str = Form(...)
-):
-    """Import an Excel/CSV file with column mapping"""
-    # Verify project exists
-    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    content = await file.read()
-    filename = file.filename.lower()
-    mapping = json.loads(column_mapping)
-    
-    try:
-        if filename.endswith('.csv'):
-            df = pd.read_csv(io.BytesIO(content))
-        elif filename.endswith('.xlsx'):
-            df = pd.read_excel(io.BytesIO(content), engine='openpyxl')
-        elif filename.endswith('.xls'):
-            df = pd.read_excel(io.BytesIO(content), engine='xlrd')
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file format")
-        
-        now = datetime.now(timezone.utc).isoformat()
-        batch_id = str(uuid.uuid4())
-        rows_imported = 0
-        rows_created = 0
-        rows_merged = 0
-        rows_flagged = 0
-        errors = []
-        
-        for _, row in df.iterrows():
-            try:
-                # Map columns to contact fields
-                contact_data = {
-                    "id": str(uuid.uuid4()),
-                    "project_id": project_id,
-                    "import_source_type": "excel_import",
-                    "import_source_file": file.filename,
-                    "source_image_front": "",
-                    "source_image_back": "",
-                    "confidence_score": 100,
-                    "validation_status": "imported",
-                    "review_status": "pending",
-                    "duplicate_status": "none",
-                    "ai_notes": "",
-                    "notes": "",
-                    "created_at": now,
-                    "updated_at": now
-                }
-                
-                # Apply mapping
-                for source_col, target_field in mapping.items():
-                    if source_col in row.index and target_field:
-                        value = row[source_col]
-                        if pd.notna(value):
-                            contact_data[target_field] = str(value)
-                
-                # Set defaults for missing fields
-                for field in ["first_name", "middle_name", "last_name", "full_name", "full_name_original",
-                              "job_title", "department", "mobile_phone", "direct_phone", "office_phone",
-                              "primary_email", "secondary_email", "linkedin_url", "personal_website",
-                              "company_id", "company_name_display", "brand_name", "legal_company_name"]:
-                    if field not in contact_data:
-                        contact_data[field] = ""
-                
-                # Generate full_name if not provided
-                if not contact_data.get('full_name') and (contact_data.get('first_name') or contact_data.get('last_name')):
-                    contact_data['full_name'] = f"{contact_data.get('first_name', '')} {contact_data.get('last_name', '')}".strip()
-                
-                # Check for duplicates
-                duplicates = await detect_duplicates(project_id, contact_data)
-                if duplicates:
-                    contact_data['duplicate_status'] = 'potential_duplicate'
-                    contact_data['review_status'] = 'needs_review'
-                    rows_flagged += 1
-                
-                # Save contact
-                await db.contacts.insert_one(contact_data)
-                rows_created += 1
-                rows_imported += 1
-                
-            except Exception as e:
-                errors.append(f"Row {rows_imported + 1}: {str(e)}")
-        
-        # Log import
-        import_log = {
-            "batch_id": batch_id,
-            "project_id": project_id,
-            "source_type": "excel_import",
-            "file_name": file.filename,
-            "import_datetime": now,
-            "rows_imported": rows_imported,
-            "rows_created": rows_created,
-            "rows_merged": rows_merged,
-            "rows_flagged": rows_flagged,
-            "errors": json.dumps(errors)
-        }
-        await db.import_logs.insert_one(import_log)
-        
-        # Update project timestamp
-        await db.projects.update_one({"id": project_id}, {"$set": {"updated_at": now}})
-        
-        return {
-            "batch_id": batch_id,
-            "rows_imported": rows_imported,
-            "rows_created": rows_created,
-            "rows_merged": rows_merged,
-            "rows_flagged": rows_flagged,
-            "errors": errors
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Import failed: {str(e)}")
+@api_router.get("/")
+async def root():
+    return {"message": "BizScan Pro API with Google Sheets", "version": "2.0.0"}
 
-# --- Duplicates ---
-@api_router.get("/projects/{project_id}/duplicates")
-async def get_duplicates(project_id: str):
-    """Get contacts flagged as potential duplicates"""
-    contacts = await db.contacts.find({
-        "project_id": project_id,
-        "duplicate_status": "potential_duplicate"
-    }, {"_id": 0}).to_list(10000)
-    return contacts
-
-@api_router.post("/projects/{project_id}/duplicates/merge")
-async def merge_duplicates(project_id: str, contact_ids: List[str], keep_id: str):
-    """Merge duplicate contacts, keeping one as primary"""
-    now = datetime.now(timezone.utc).isoformat()
-    
-    # Get all contacts to merge
-    contacts = []
-    async for c in db.contacts.find({"id": {"$in": contact_ids}, "project_id": project_id}, {"_id": 0}):
-        contacts.append(c)
-    
-    if not contacts:
-        raise HTTPException(status_code=404, detail="No contacts found")
-    
-    # Find the primary contact
-    primary = next((c for c in contacts if c['id'] == keep_id), contacts[0])
-    
-    # Merge data from other contacts (fill empty fields)
-    for contact in contacts:
-        if contact['id'] != primary['id']:
-            for key, value in contact.items():
-                if key not in ['id', 'created_at', '_id'] and value and not primary.get(key):
-                    primary[key] = value
-    
-    primary['updated_at'] = now
-    primary['duplicate_status'] = 'merged'
-    primary['ai_notes'] += f"\nMerged from contacts: {', '.join([c['id'] for c in contacts if c['id'] != keep_id])}"
-    
-    # Update primary contact
-    await db.contacts.update_one({"id": keep_id}, {"$set": primary})
-    
-    # Delete other contacts
-    for contact in contacts:
-        if contact['id'] != keep_id:
-            await db.contacts.delete_one({"id": contact['id']})
-    
-    return {"message": "Contacts merged", "primary_id": keep_id}
-
-@api_router.post("/projects/{project_id}/duplicates/dismiss")
-async def dismiss_duplicate(project_id: str, contact_id: str):
-    """Mark a contact as not a duplicate (keep it but remove duplicate flag)"""
-    result = await db.contacts.update_one(
-        {"id": contact_id, "project_id": project_id},
-        {"$set": {"duplicate_status": "dismissed", "updated_at": datetime.now(timezone.utc).isoformat()}}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    return {"message": "Duplicate dismissed"}
-
-@api_router.delete("/projects/{project_id}/duplicates/{contact_id}")
-async def delete_duplicate(project_id: str, contact_id: str):
-    """Permanently delete a duplicate contact from database"""
-    # Check if contact exists
-    contact = await db.contacts.find_one({"id": contact_id, "project_id": project_id}, {"_id": 0})
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    
-    # Delete the contact permanently
-    await db.contacts.delete_one({"id": contact_id, "project_id": project_id})
-    
-    # Update project timestamp
-    await db.projects.update_one(
-        {"id": project_id}, 
-        {"$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
-    )
-    
-    return {"message": "Contact deleted permanently"}
-
-# --- Review ---
-@api_router.get("/projects/{project_id}/review")
-async def get_review_queue(project_id: str):
-    """Get contacts needing review"""
-    contacts = await db.contacts.find({
-        "project_id": project_id,
-        "review_status": "needs_review"
-    }, {"_id": 0}).to_list(10000)
-    return contacts
-
-@api_router.post("/projects/{project_id}/contacts/{contact_id}/approve")
-async def approve_contact(project_id: str, contact_id: str):
-    """Approve a contact after review"""
-    result = await db.contacts.update_one(
-        {"id": contact_id, "project_id": project_id},
-        {"$set": {"review_status": "approved", "updated_at": datetime.now(timezone.utc).isoformat()}}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    return {"message": "Contact approved"}
-
-@api_router.post("/projects/{project_id}/contacts/{contact_id}/reject")
-async def reject_contact(project_id: str, contact_id: str):
-    """Reject a contact after review"""
-    result = await db.contacts.update_one(
-        {"id": contact_id, "project_id": project_id},
-        {"$set": {"review_status": "rejected", "updated_at": datetime.now(timezone.utc).isoformat()}}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    return {"message": "Contact rejected"}
-
-# --- Export ---
-@api_router.get("/projects/{project_id}/export")
-async def export_project(project_id: str, format: str = "xlsx"):
-    """Export project data as Excel or CSV - exports ALL data in database"""
-    from fastapi.responses import StreamingResponse
-    
-    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # Export ALL contacts and companies in database (no filters)
-    contacts = await db.contacts.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
-    companies = await db.companies.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
-    import_logs = await db.import_logs.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
-    duplicates = await db.duplicates.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
-    ai_audits = await db.ai_audits.find({"record_id": {"$in": [c['id'] for c in contacts]}}, {"_id": 0}).to_list(10000)
-    
-    if format == "xlsx":
-        output = generate_excel_workbook(project, contacts, companies, import_logs, duplicates, ai_audits)
-        filename = f"{project['name'].replace(' ', '_')}_export.xlsx"
-        return StreamingResponse(
-            output,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
-    elif format == "csv":
-        # Export contacts as CSV
-        output = io.StringIO()
-        if contacts:
-            writer = csv.DictWriter(output, fieldnames=contacts[0].keys())
-            writer.writeheader()
-            writer.writerows(contacts)
-        
-        filename = f"{project['name'].replace(' ', '_')}_contacts.csv"
-        return StreamingResponse(
-            io.BytesIO(output.getvalue().encode()),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported format. Use xlsx or csv.")
-
-# Include the router in the main app
+# Include router
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
