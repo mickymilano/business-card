@@ -459,6 +459,112 @@ export const exportProjectData = async (projectId) => {
   };
 };
 
+// ===================
+// BACKUP & RESTORE
+// ===================
+
+export const createFullBackup = async () => {
+  const projects = await getAllProjects();
+  const allContacts = [];
+  const allCompanies = [];
+  
+  for (const project of projects) {
+    const contacts = await getContactsByProject(project.id);
+    const companies = await getCompaniesByProject(project.id);
+    allContacts.push(...contacts);
+    allCompanies.push(...companies);
+  }
+  
+  const settings = await getSettings();
+  
+  return {
+    version: '2.0',
+    exported_at: new Date().toISOString(),
+    data: {
+      projects,
+      contacts: allContacts,
+      companies: allCompanies,
+      settings
+    }
+  };
+};
+
+export const restoreFromBackup = async (backupData, options = { merge: false }) => {
+  if (!backupData || !backupData.data) {
+    throw new Error('Invalid backup file');
+  }
+
+  const { projects, contacts, companies, settings } = backupData.data;
+  const results = {
+    projects_imported: 0,
+    contacts_imported: 0,
+    companies_imported: 0,
+    skipped: 0
+  };
+
+  // Clear existing data if not merging
+  if (!options.merge) {
+    const existingProjects = await getAllProjects();
+    for (const p of existingProjects) {
+      await deleteProject(p.id);
+    }
+  }
+
+  // Import projects
+  const projectStore = await getStore(STORES.PROJECTS, 'readwrite');
+  for (const project of projects || []) {
+    try {
+      await new Promise((resolve, reject) => {
+        const request = projectStore.put(project);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+      results.projects_imported++;
+    } catch (e) {
+      results.skipped++;
+    }
+  }
+
+  // Import contacts
+  const contactStore = await getStore(STORES.CONTACTS, 'readwrite');
+  for (const contact of contacts || []) {
+    try {
+      await new Promise((resolve, reject) => {
+        const request = contactStore.put(contact);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+      results.contacts_imported++;
+    } catch (e) {
+      results.skipped++;
+    }
+  }
+
+  // Import companies
+  const companyStore = await getStore(STORES.COMPANIES, 'readwrite');
+  for (const company of companies || []) {
+    try {
+      await new Promise((resolve, reject) => {
+        const request = companyStore.put(company);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+      results.companies_imported++;
+    } catch (e) {
+      results.skipped++;
+    }
+  }
+
+  // Import settings
+  if (settings) {
+    for (const [key, value] of Object.entries(settings)) {
+      await setSetting(key, value);
+    }
+  }
+
+  return results;
+};
+
 // Initialize DB on module load
 initDB().catch(console.error);
 
@@ -486,5 +592,8 @@ export default {
   setSetting,
   getSettings,
   // Export
-  exportProjectData
+  exportProjectData,
+  // Backup
+  createFullBackup,
+  restoreFromBackup
 };

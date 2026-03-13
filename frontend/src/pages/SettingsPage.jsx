@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useApp, Header, PageTransition, API } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,10 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Settings, Key, Cpu, Check, X, Loader2, Wifi, WifiOff, Eye, EyeOff, Database } from "lucide-react";
+import { Settings, Key, Cpu, Check, X, Loader2, Wifi, WifiOff, Eye, EyeOff, Database, CloudUpload, ChevronRight } from "lucide-react";
 import * as db from "@/services/db";
 
 const SettingsPage = () => {
+  const navigate = useNavigate();
   const { settings, setSettings } = useApp();
   const [localSettings, setLocalSettings] = useState({
     anthropic_api_key: "",
@@ -316,8 +318,30 @@ const SettingsPage = () => {
           </CardContent>
         </Card>
 
+        {/* Backup & Sync */}
+        <Card 
+          className="border mb-4 cursor-pointer hover:border-accent/50 transition-colors"
+          onClick={() => navigate("/backup")}
+          data-testid="backup-sync-card"
+        >
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex gap-3">
+                <CloudUpload className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="font-medium text-sm">Backup & Sync</h4>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Trasferisci i dati tra dispositivi diversi
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-muted-foreground" />
+            </div>
+          </CardContent>
+        </Card>
+
         <p className="text-xs text-center text-muted-foreground mt-4">
-          BizScan Pro v2.0 • Local Storage • Powered by Claude AI
+          ES Cards v2.0 • Local Storage • Powered by Claude AI
         </p>
       </main>
     </PageTransition>

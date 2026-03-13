@@ -31,6 +31,7 @@ import ReviewPage from "@/pages/ReviewPage";
 import DuplicatesPage from "@/pages/DuplicatesPage";
 import ExportPage from "@/pages/ExportPage";
 import SettingsPage from "@/pages/SettingsPage";
+import BackupPage from "@/pages/BackupPage";
 
 // Context
 const AppContext = createContext();
@@ -188,6 +189,7 @@ function AppContent() {
             <Route path="/duplicates" element={<DuplicatesPage />} />
             <Route path="/export" element={<ExportPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/backup" element={<BackupPage />} />
           </Routes>
         </AnimatePresence>
         <BottomNav />

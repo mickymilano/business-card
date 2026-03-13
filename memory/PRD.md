@@ -70,11 +70,19 @@ The FastAPI backend now serves only AI operations:
 - CSV export of contacts
 - CSV export of companies
 
+### ✅ Backup & Sync (NEW)
+- Full backup export to JSON file
+- Import backup from JSON file
+- Merge mode option (add to existing or replace)
+- Instructions for transferring between devices
+- Italian UI for backup page
+
 ### ✅ Settings
 - API key configuration (optional, uses Emergent key by default)
 - Claude model selection
 - AI feature toggles
 - Local storage info display
+- Link to Backup & Sync page
 
 ## Technical Stack
 
@@ -179,6 +187,10 @@ Key-value pairs for app configuration.
 - Backend simplified to AI extraction only
 - Frontend handles all CRUD operations
 - Excel import handled client-side with XLSX library
+- **NEW:** PWA icon "ES" (blue background, white letters)
+- **NEW:** Backup & Sync feature for data transfer between devices
+- **NEW:** Full backup export/import with JSON files
+- Apple touch icon and PWA manifest configured
 
 ### v1.0.0 (Previous)
 - Initial implementation with MongoDB backend
