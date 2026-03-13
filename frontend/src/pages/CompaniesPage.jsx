@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Building2, Search, ChevronRight, Globe, Phone, Mail, MapPin } from "lucide-react";
+import * as db from "@/services/db";
 
 const CompaniesPage = () => {
   const navigate = useNavigate();
@@ -23,12 +24,10 @@ const CompaniesPage = () => {
 
   const fetchCompanies = async () => {
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/companies`);
-      if (res.ok) {
-        const data = await res.json();
-        setCompanies(data);
-      }
+      const data = await db.getCompaniesByProject(currentProject.id);
+      setCompanies(data);
     } catch (e) {
+      console.error("Failed to load companies:", e);
       toast.error("Failed to load companies");
     } finally {
       setLoading(false);

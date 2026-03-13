@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { ClipboardCheck, Check, X, ChevronRight, AlertCircle, User } from "lucide-react";
+import * as db from "@/services/db";
 
 const ReviewPage = () => {
   const navigate = useNavigate();
@@ -22,12 +23,10 @@ const ReviewPage = () => {
 
   const fetchReviewQueue = async () => {
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/review`);
-      if (res.ok) {
-        const data = await res.json();
-        setContacts(data);
-      }
+      const data = await db.getContactsByProject(currentProject.id, { review_status: "needs_review" });
+      setContacts(data);
     } catch (e) {
+      console.error("Failed to load review queue:", e);
       toast.error("Failed to load review queue");
     } finally {
       setLoading(false);
@@ -37,14 +36,11 @@ const ReviewPage = () => {
   const approveContact = async (e, contactId) => {
     e.stopPropagation();
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts/${contactId}/approve`, {
-        method: "POST"
-      });
-      if (res.ok) {
-        setContacts(contacts.filter(c => c.id !== contactId));
-        toast.success("Contact approved");
-      }
+      await db.updateContact(contactId, { review_status: "approved" });
+      setContacts(contacts.filter(c => c.id !== contactId));
+      toast.success("Contact approved");
     } catch (e) {
+      console.error("Failed to approve contact:", e);
       toast.error("Failed to approve contact");
     }
   };
@@ -52,14 +48,11 @@ const ReviewPage = () => {
   const rejectContact = async (e, contactId) => {
     e.stopPropagation();
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts/${contactId}/reject`, {
-        method: "POST"
-      });
-      if (res.ok) {
-        setContacts(contacts.filter(c => c.id !== contactId));
-        toast.success("Contact rejected");
-      }
+      await db.deleteContact(contactId);
+      setContacts(contacts.filter(c => c.id !== contactId));
+      toast.success("Contact rejected and deleted");
     } catch (e) {
+      console.error("Failed to reject contact:", e);
       toast.error("Failed to reject contact");
     }
   };

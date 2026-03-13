@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import {
   Globe, Linkedin, User, Briefcase, MapPin, AlertCircle,
   Edit2, Eye
 } from "lucide-react";
+import * as db from "@/services/db";
 
 const ContactDetailPage = () => {
   const { contactId } = useParams();
@@ -34,9 +35,8 @@ const ContactDetailPage = () => {
 
   const fetchContact = async () => {
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts/${contactId}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await db.getContact(contactId);
+      if (data) {
         setContact(data);
         setFormData(data);
       } else {
@@ -44,6 +44,7 @@ const ContactDetailPage = () => {
         navigate("/contacts");
       }
     } catch (e) {
+      console.error("Failed to load contact:", e);
       toast.error("Failed to load contact");
     } finally {
       setLoading(false);
@@ -57,22 +58,13 @@ const ContactDetailPage = () => {
   const saveChanges = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts/${contactId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData)
-      });
-
-      if (res.ok) {
-        const updated = await res.json();
-        setContact(updated);
-        setFormData(updated);
-        setEditing(false);
-        toast.success("Contact updated");
-      } else {
-        toast.error("Failed to save changes");
-      }
+      const updated = await db.updateContact(contactId, formData);
+      setContact(updated);
+      setFormData(updated);
+      setEditing(false);
+      toast.success("Contact updated");
     } catch (e) {
+      console.error("Failed to save changes:", e);
       toast.error("Failed to save changes");
     } finally {
       setSaving(false);
@@ -81,30 +73,23 @@ const ContactDetailPage = () => {
 
   const approveContact = async () => {
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts/${contactId}/approve`, {
-        method: "POST"
-      });
-      if (res.ok) {
-        setContact(prev => ({ ...prev, review_status: "approved" }));
-        setFormData(prev => ({ ...prev, review_status: "approved" }));
-        toast.success("Contact approved");
-      }
+      const updated = await db.updateContact(contactId, { review_status: "approved" });
+      setContact(updated);
+      setFormData(updated);
+      toast.success("Contact approved");
     } catch (e) {
+      console.error("Failed to approve contact:", e);
       toast.error("Failed to approve contact");
     }
   };
 
   const rejectContact = async () => {
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts/${contactId}/reject`, {
-        method: "POST"
-      });
-      if (res.ok) {
-        setContact(prev => ({ ...prev, review_status: "rejected" }));
-        setFormData(prev => ({ ...prev, review_status: "rejected" }));
-        toast.success("Contact rejected");
-      }
+      await db.deleteContact(contactId);
+      toast.success("Contact rejected and deleted");
+      navigate("/contacts");
     } catch (e) {
+      console.error("Failed to reject contact:", e);
       toast.error("Failed to reject contact");
     }
   };
@@ -113,14 +98,11 @@ const ContactDetailPage = () => {
     if (!confirm("Are you sure you want to delete this contact?")) return;
 
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts/${contactId}`, {
-        method: "DELETE"
-      });
-      if (res.ok) {
-        toast.success("Contact deleted");
-        navigate("/contacts");
-      }
+      await db.deleteContact(contactId);
+      toast.success("Contact deleted");
+      navigate("/contacts");
     } catch (e) {
+      console.error("Failed to delete contact:", e);
       toast.error("Failed to delete contact");
     }
   };

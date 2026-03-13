@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,6 +10,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Upload, FileSpreadsheet, Loader2, Check, ArrowRight, X } from "lucide-react";
+import * as XLSX from "xlsx";
+import * as db from "@/services/db";
+
+const TARGET_FIELDS = [
+  "first_name", "middle_name", "last_name", "full_name",
+  "job_title", "department",
+  "mobile_phone", "direct_phone", "office_phone",
+  "primary_email", "secondary_email",
+  "linkedin_url", "personal_website",
+  "company_name_display", "brand_name", "legal_company_name",
+  "address", "postal_code", "country",
+  "notes"
+];
 
 const ImportPage = () => {
   const navigate = useNavigate();
@@ -22,6 +35,7 @@ const ImportPage = () => {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [step, setStep] = useState(1); // 1: upload, 2: mapping, 3: result
+  const [rawData, setRawData] = useState([]);
 
   if (!currentProject) {
     return (
@@ -37,48 +51,86 @@ const ImportPage = () => {
     );
   }
 
+  const suggestMapping = (columns) => {
+    const suggestions = {};
+    const lowerColumns = columns.map(c => c.toLowerCase().trim());
+    
+    const mappingRules = {
+      'first_name': ['first name', 'firstname', 'first', 'nome'],
+      'last_name': ['last name', 'lastname', 'last', 'surname', 'cognome'],
+      'full_name': ['full name', 'fullname', 'name', 'nome completo'],
+      'job_title': ['job title', 'title', 'position', 'role', 'titolo', 'posizione'],
+      'department': ['department', 'dept', 'dipartimento'],
+      'mobile_phone': ['mobile', 'mobile phone', 'cell', 'cellphone', 'cellulare'],
+      'direct_phone': ['direct', 'direct phone', 'direct line'],
+      'office_phone': ['office', 'office phone', 'work phone', 'phone', 'telefono'],
+      'primary_email': ['email', 'e-mail', 'primary email', 'mail'],
+      'secondary_email': ['secondary email', 'other email', 'alt email'],
+      'linkedin_url': ['linkedin', 'linkedin url', 'linkedin profile'],
+      'company_name_display': ['company', 'company name', 'organization', 'azienda', 'società'],
+      'address': ['address', 'street', 'indirizzo'],
+      'postal_code': ['postal code', 'zip', 'zip code', 'cap', 'postcode'],
+      'country': ['country', 'nation', 'paese'],
+      'notes': ['notes', 'note', 'comments']
+    };
+
+    columns.forEach((col, i) => {
+      const lowerCol = lowerColumns[i];
+      for (const [field, patterns] of Object.entries(mappingRules)) {
+        if (patterns.some(p => lowerCol.includes(p) || p.includes(lowerCol))) {
+          suggestions[col] = field;
+          break;
+        }
+      }
+    });
+
+    return suggestions;
+  };
+
   const handleFileSelect = async (e) => {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
 
-    const validTypes = [
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.ms-excel",
-      "text/csv"
-    ];
     const validExtensions = [".xlsx", ".xls", ".csv"];
     const hasValidExtension = validExtensions.some(ext => 
       selectedFile.name.toLowerCase().endsWith(ext)
     );
 
-    if (!validTypes.includes(selectedFile.type) && !hasValidExtension) {
+    if (!hasValidExtension) {
       toast.error("Please select an Excel (.xlsx, .xls) or CSV file");
       return;
     }
 
     setFile(selectedFile);
 
-    // Get preview
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/import/preview`, {
-        method: "POST",
-        body: formData
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setPreview(data);
-        setMapping(data.suggested_mappings || {});
-        setStep(2);
-      } else {
-        const error = await res.json();
-        toast.error(error.detail || "Failed to parse file");
+      // Parse file with XLSX
+      const data = await selectedFile.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
+      
+      if (jsonData.length === 0) {
+        toast.error("No data found in file");
+        return;
       }
+
+      const columns = Object.keys(jsonData[0]);
+      const suggestions = suggestMapping(columns);
+
+      setRawData(jsonData);
+      setPreview({
+        filename: selectedFile.name,
+        columns,
+        row_count: jsonData.length,
+        sample_rows: jsonData.slice(0, 5),
+        target_fields: TARGET_FIELDS
+      });
+      setMapping(suggestions);
+      setStep(2);
     } catch (e) {
-      toast.error("Failed to preview file");
+      console.error("File parse error:", e);
+      toast.error("Failed to parse file");
     }
   };
 
@@ -91,27 +143,57 @@ const ImportPage = () => {
 
   const importFile = async () => {
     setImporting(true);
-
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("column_mapping", JSON.stringify(mapping));
-
+    
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/import`, {
-        method: "POST",
-        body: formData
-      });
+      let rowsImported = 0;
+      let rowsFlagged = 0;
+      const errors = [];
 
-      if (res.ok) {
-        const result = await res.json();
-        setImportResult(result);
-        setStep(3);
-        toast.success(`Imported ${result.rows_imported} contacts`);
-      } else {
-        const error = await res.json();
-        toast.error(error.detail || "Import failed");
+      for (const row of rawData) {
+        try {
+          const contactData = {};
+          
+          // Apply mapping
+          for (const [sourceCol, targetField] of Object.entries(mapping)) {
+            if (targetField && row[sourceCol]) {
+              contactData[targetField] = String(row[sourceCol]).trim();
+            }
+          }
+
+          // Skip empty rows
+          const hasData = Object.values(contactData).some(v => v);
+          if (!hasData) continue;
+
+          // Set defaults
+          contactData.import_source_type = 'excel_import';
+          contactData.import_source_file = file.name;
+          contactData.validation_status = 'pending';
+          contactData.review_status = 'needs_review';
+          contactData.duplicate_status = 'none';
+          contactData.confidence_score = 50; // Manual import - moderate confidence
+
+          // Build full name if not provided
+          if (!contactData.full_name && (contactData.first_name || contactData.last_name)) {
+            contactData.full_name = `${contactData.first_name || ''} ${contactData.last_name || ''}`.trim();
+          }
+
+          await db.createContact(currentProject.id, contactData);
+          rowsImported++;
+          rowsFlagged++; // All imported contacts need review
+        } catch (rowError) {
+          errors.push(rowError.message);
+        }
       }
+
+      setImportResult({
+        rows_imported: rowsImported,
+        rows_flagged: rowsFlagged,
+        errors
+      });
+      setStep(3);
+      toast.success(`Imported ${rowsImported} contacts`);
     } catch (e) {
+      console.error("Import error:", e);
       toast.error("Failed to import file");
     } finally {
       setImporting(false);
@@ -124,6 +206,7 @@ const ImportPage = () => {
     setMapping({});
     setImportResult(null);
     setStep(1);
+    setRawData([]);
   };
 
   return (
@@ -317,7 +400,7 @@ const ImportPage = () => {
                   </div>
                   <div className="text-center">
                     <div className="text-2xl font-bold text-yellow-600">{importResult.rows_flagged}</div>
-                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Flagged</div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-widest">To Review</div>
                   </div>
                 </div>
                 {importResult.errors?.length > 0 && (

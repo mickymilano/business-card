@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import {
   Camera, FileSpreadsheet, Users, Building2, ClipboardCheck, 
   Copy, Download, ChevronRight, Calendar, Clock, FileText
 } from "lucide-react";
+import * as db from "@/services/db";
 
 const ProjectDetailPage = () => {
   const { projectId } = useParams();
@@ -30,34 +31,30 @@ const ProjectDetailPage = () => {
 
   const fetchProject = async () => {
     try {
-      const res = await fetch(`${API}/projects/${projectId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setProject(data);
-        setCurrentProject(data);
-
-        // Fetch stats
-        const [contactsRes, reviewRes, dupsRes] = await Promise.all([
-          fetch(`${API}/projects/${projectId}/contacts`),
-          fetch(`${API}/projects/${projectId}/review`),
-          fetch(`${API}/projects/${projectId}/duplicates`)
-        ]);
-
-        const contacts = contactsRes.ok ? await contactsRes.json() : [];
-        const review = reviewRes.ok ? await reviewRes.json() : [];
-        const dups = dupsRes.ok ? await dupsRes.json() : [];
-
-        setStats({
-          contacts: contacts.length,
-          companies: data.company_count || 0,
-          needsReview: review.length,
-          duplicates: dups.length
-        });
-      } else {
+      const data = await db.getProject(projectId);
+      if (!data) {
         toast.error("Project not found");
         navigate("/");
+        return;
       }
+      
+      setProject(data);
+      setCurrentProject(data);
+
+      // Fetch stats from IndexedDB
+      const contacts = await db.getContactsByProject(projectId);
+      const companies = await db.getCompaniesByProject(projectId);
+      const review = contacts.filter(c => c.review_status === "needs_review");
+      const dups = contacts.filter(c => c.duplicate_status === "potential_duplicate");
+
+      setStats({
+        contacts: contacts.length,
+        companies: companies.length,
+        needsReview: review.length,
+        duplicates: dups.length
+      });
     } catch (e) {
+      console.error("Failed to load project:", e);
       toast.error("Failed to load project");
       navigate("/");
     } finally {

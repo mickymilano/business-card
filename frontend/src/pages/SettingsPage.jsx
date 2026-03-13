@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Settings, Key, Cpu, Check, X, Loader2, Wifi, WifiOff, Eye, EyeOff } from "lucide-react";
+import { Settings, Key, Cpu, Check, X, Loader2, Wifi, WifiOff, Eye, EyeOff, Database } from "lucide-react";
+import * as db from "@/services/db";
 
 const SettingsPage = () => {
   const { settings, setSettings } = useApp();
@@ -36,14 +37,14 @@ const SettingsPage = () => {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch(`${API}/settings`);
-      if (res.ok) {
-        const data = await res.json();
-        setLocalSettings(data);
-        setSettings(data);
+      const savedSettings = await db.getSettings();
+      if (savedSettings && Object.keys(savedSettings).length > 0) {
+        const mergedSettings = { ...localSettings, ...savedSettings };
+        setLocalSettings(mergedSettings);
+        setSettings(mergedSettings);
       }
     } catch (e) {
-      console.error("Failed to load settings");
+      console.error("Failed to load settings:", e);
     }
   };
 
@@ -54,21 +55,14 @@ const SettingsPage = () => {
   const saveSettings = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`${API}/settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(localSettings)
-      });
-
-      if (res.ok) {
-        const updated = await res.json();
-        setLocalSettings(updated);
-        setSettings(updated);
-        toast.success("Settings saved");
-      } else {
-        toast.error("Failed to save settings");
+      // Save each setting to IndexedDB
+      for (const [key, value] of Object.entries(localSettings)) {
+        await db.setSetting(key, value);
       }
+      setSettings(localSettings);
+      toast.success("Settings saved locally");
     } catch (e) {
+      console.error("Failed to save settings:", e);
       toast.error("Failed to save settings");
     } finally {
       setSaving(false);
@@ -78,26 +72,15 @@ const SettingsPage = () => {
   const testConnection = async () => {
     setTesting(true);
     try {
-      // Save settings first
-      await fetch(`${API}/settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(localSettings)
-      });
-
-      // Test connection
-      const res = await fetch(`${API}/settings/test-connection`, {
-        method: "POST"
-      });
-
-      const result = await res.json();
+      // Test backend health
+      const res = await fetch(`${API}/health`);
       
-      if (result.status === "success") {
+      if (res.ok) {
         setLocalSettings(prev => ({ ...prev, connection_status: "connected" }));
-        toast.success("Connection successful!");
+        toast.success("Backend connected successfully!");
       } else {
         setLocalSettings(prev => ({ ...prev, connection_status: "error" }));
-        toast.error(result.message || "Connection failed");
+        toast.error("Backend connection failed");
       }
     } catch (e) {
       setLocalSettings(prev => ({ ...prev, connection_status: "error" }));
@@ -318,8 +301,23 @@ const SettingsPage = () => {
         </Button>
 
         {/* Info */}
+        <Card className="border mb-4 bg-blue-50 dark:bg-blue-900/20">
+          <CardContent className="p-4">
+            <div className="flex gap-3">
+              <Database className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-medium text-sm">Local Storage</h4>
+                <p className="text-xs text-muted-foreground mt-1">
+                  All your data is stored locally on this device using IndexedDB. 
+                  Data persists across app redeployments but is specific to this browser.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <p className="text-xs text-center text-muted-foreground mt-4">
-          BizScan Pro v1.0 • Powered by Claude AI
+          BizScan Pro v2.0 • Local Storage • Powered by Claude AI
         </p>
       </main>
     </PageTransition>

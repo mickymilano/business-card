@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Users, Search, ChevronRight, Mail, Phone, Building2, AlertCircle } from "lucide-react";
+import * as db from "@/services/db";
 
 const ContactsPage = () => {
   const navigate = useNavigate();
@@ -25,12 +26,10 @@ const ContactsPage = () => {
 
   const fetchContacts = async () => {
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/contacts`);
-      if (res.ok) {
-        const data = await res.json();
-        setContacts(data);
-      }
+      const data = await db.getContactsByProject(currentProject.id);
+      setContacts(data);
     } catch (e) {
+      console.error("Failed to load contacts:", e);
       toast.error("Failed to load contacts");
     } finally {
       setLoading(false);

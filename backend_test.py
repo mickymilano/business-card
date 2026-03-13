@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 import io
 
 class BizScanAPITester:
-    def __init__(self, base_url: str = "https://databridge-cards.preview.emergentagent.com"):
+    def __init__(self, base_url: str = "https://card-contacts-1.preview.emergentagent.com"):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
         self.tests_run = 0

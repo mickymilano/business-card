@@ -12,6 +12,7 @@ import {
   FileText, Upload, Loader2, Check, X, AlertCircle, 
   Users, Building2, ChevronRight, FileWarning
 } from "lucide-react";
+import * as db from "@/services/db";
 
 const BatchScanPage = () => {
   const navigate = useNavigate();
@@ -74,18 +75,82 @@ const BatchScanPage = () => {
         setProgress(prev => Math.min(prev + 5, 90));
       }, 2000);
 
-      const res = await fetch(`${API}/projects/${currentProject.id}/scan/batch`, {
+      // Call backend API for AI extraction only
+      const res = await fetch(`${API}/scan/batch`, {
         method: "POST",
         body: formData
       });
 
       clearInterval(progressInterval);
-      setProgress(100);
+      setProgress(95);
 
       if (res.ok) {
         const data = await res.json();
-        setResult(data);
-        toast.success(`Found ${data.total_cards_found} business cards!`);
+        
+        // Save all extracted contacts to IndexedDB
+        let contactsCreated = 0;
+        let needsReview = 0;
+        
+        for (const extractedCard of data.contacts || []) {
+          const contactData = {
+            first_name: extractedCard.first_name || '',
+            middle_name: extractedCard.middle_name || '',
+            last_name: extractedCard.last_name || '',
+            full_name: `${extractedCard.first_name || ''} ${extractedCard.last_name || ''}`.trim(),
+            full_name_original: extractedCard.full_name_original || '',
+            job_title: extractedCard.job_title || '',
+            department: extractedCard.department || '',
+            mobile_phone: extractedCard.mobile_phone || '',
+            direct_phone: extractedCard.direct_phone || '',
+            office_phone: extractedCard.office_phone || '',
+            primary_email: extractedCard.primary_email || '',
+            secondary_email: extractedCard.secondary_email || '',
+            linkedin_url: extractedCard.linkedin_url || '',
+            personal_website: extractedCard.personal_website || '',
+            company_name_display: extractedCard.company_name_display || '',
+            brand_name: extractedCard.brand_name || '',
+            legal_company_name: extractedCard.legal_company_name || '',
+            address: extractedCard.address || '',
+            postal_code: extractedCard.postal_code || '',
+            country: extractedCard.country || '',
+            import_source_type: 'batch_pdf',
+            import_source_file: file.name,
+            confidence_score: extractedCard.confidence_score || 0,
+            validation_status: 'pending',
+            review_status: (extractedCard.confidence_score || 0) < 80 ? 'needs_review' : 'approved',
+            duplicate_status: 'none',
+            ai_notes: extractedCard.ai_notes || ''
+          };
+
+          await db.createContact(currentProject.id, contactData);
+          contactsCreated++;
+          if ((extractedCard.confidence_score || 0) < 80) needsReview++;
+          
+          // Save company if present
+          if (extractedCard.company_name_display || extractedCard.brand_name) {
+            await db.createCompany(currentProject.id, {
+              legal_company_name: extractedCard.legal_company_name || '',
+              brand_name: extractedCard.brand_name || '',
+              company_display_name: extractedCard.company_name_display || '',
+              website: extractedCard.website || '',
+              main_phone: extractedCard.office_phone || '',
+              address: extractedCard.address || '',
+              postal_code: extractedCard.postal_code || '',
+              country: extractedCard.country || '',
+              industry: extractedCard.industry || ''
+            });
+          }
+        }
+
+        setProgress(100);
+        setResult({
+          total_pages: data.total_pages || 1,
+          total_cards_found: data.contacts?.length || 0,
+          contacts_created: contactsCreated,
+          needs_review: needsReview,
+          page_results: data.page_results || []
+        });
+        toast.success(`Found ${data.contacts?.length || 0} business cards!`);
       } else {
         const errorData = await res.json();
         setError(errorData.detail || "Processing failed");

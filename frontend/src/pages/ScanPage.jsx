@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Camera, Upload, Image, X, Loader2, Check, AlertCircle, FileText } from "lucide-react";
+import * as db from "@/services/db";
 
 // Fast image compression - optimized for mobile
 const compressImage = (file) => {
@@ -150,25 +151,76 @@ const ScanPage = () => {
     setScanResult(null);
 
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/scan`, {
+      // Call backend API for AI extraction only
+      const res = await fetch(`${API}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          project_id: currentProject.id,
           image_front: frontImage.base64,
-          image_back: backImage?.base64 || null,
-          multiple_cards: false
+          image_back: backImage?.base64 || null
         })
       });
 
       if (res.ok) {
-        const result = await res.json();
-        setScanResult(result);
+        const extractedData = await res.json();
+        
+        // Save contact to IndexedDB
+        const contactData = {
+          first_name: extractedData.first_name || '',
+          middle_name: extractedData.middle_name || '',
+          last_name: extractedData.last_name || '',
+          full_name: `${extractedData.first_name || ''} ${extractedData.last_name || ''}`.trim(),
+          full_name_original: extractedData.full_name_original || '',
+          job_title: extractedData.job_title || '',
+          department: extractedData.department || '',
+          mobile_phone: extractedData.mobile_phone || '',
+          direct_phone: extractedData.direct_phone || '',
+          office_phone: extractedData.office_phone || '',
+          primary_email: extractedData.primary_email || '',
+          secondary_email: extractedData.secondary_email || '',
+          linkedin_url: extractedData.linkedin_url || '',
+          personal_website: extractedData.personal_website || '',
+          company_name_display: extractedData.company_name_display || '',
+          brand_name: extractedData.brand_name || '',
+          legal_company_name: extractedData.legal_company_name || '',
+          address: extractedData.address || '',
+          postal_code: extractedData.postal_code || '',
+          country: extractedData.country || '',
+          import_source_type: 'scan',
+          confidence_score: extractedData.confidence_score || 0,
+          validation_status: 'pending',
+          review_status: (extractedData.confidence_score || 0) < 80 ? 'needs_review' : 'approved',
+          duplicate_status: 'none',
+          ai_notes: extractedData.ai_notes || ''
+        };
+
+        const savedContact = await db.createContact(currentProject.id, contactData);
+        
+        // Save company if present
+        let savedCompany = null;
+        if (extractedData.company_name_display || extractedData.brand_name) {
+          savedCompany = await db.createCompany(currentProject.id, {
+            legal_company_name: extractedData.legal_company_name || '',
+            brand_name: extractedData.brand_name || '',
+            company_display_name: extractedData.company_name_display || '',
+            website: extractedData.website || '',
+            main_phone: extractedData.office_phone || '',
+            address: extractedData.address || '',
+            postal_code: extractedData.postal_code || '',
+            country: extractedData.country || '',
+            industry: extractedData.industry || ''
+          });
+        }
+
+        setScanResult({
+          contact: savedContact,
+          company: savedCompany,
+          extracted_data: extractedData
+        });
         toast.success("Card scanned successfully!");
       } else {
         const error = await res.json();
         const errorMsg = error.detail || "Scan failed";
-        // Check for specific error types
         if (errorMsg.includes("exceeds") || errorMsg.includes("size")) {
           toast.error("Image too large. Please try a smaller image.");
         } else if (errorMsg.includes("API key") || errorMsg.includes("key")) {

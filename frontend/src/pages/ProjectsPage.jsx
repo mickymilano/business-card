@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Plus, FolderOpen, Calendar, Users, Building2, ChevronRight, Trash2 } from "lucide-react";
+import * as db from "@/services/db";
 
 const ProjectsPage = () => {
   const navigate = useNavigate();
@@ -25,12 +26,10 @@ const ProjectsPage = () => {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch(`${API}/projects`);
-      if (res.ok) {
-        const data = await res.json();
-        setProjects(data);
-      }
+      const data = await db.getAllProjects();
+      setProjects(data);
     } catch (e) {
+      console.error("Failed to load projects:", e);
       toast.error("Failed to load projects");
     } finally {
       setLoading(false);
@@ -45,24 +44,15 @@ const ProjectsPage = () => {
 
     setCreating(true);
     try {
-      const res = await fetch(`${API}/projects`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newProjectName.trim() })
-      });
-
-      if (res.ok) {
-        const project = await res.json();
-        setProjects([...projects, project]);
-        setCurrentProject(project);
-        setShowNewDialog(false);
-        setNewProjectName("");
-        toast.success("Project created successfully");
-        navigate(`/project/${project.id}`);
-      } else {
-        toast.error("Failed to create project");
-      }
+      const project = await db.createProject({ name: newProjectName.trim() });
+      setProjects([project, ...projects]);
+      setCurrentProject(project);
+      setShowNewDialog(false);
+      setNewProjectName("");
+      toast.success("Project created successfully");
+      navigate(`/project/${project.id}`);
     } catch (e) {
+      console.error("Failed to create project:", e);
       toast.error("Failed to create project");
     } finally {
       setCreating(false);
@@ -76,12 +66,11 @@ const ProjectsPage = () => {
     }
 
     try {
-      const res = await fetch(`${API}/projects/${projectId}`, { method: "DELETE" });
-      if (res.ok) {
-        setProjects(projects.filter(p => p.id !== projectId));
-        toast.success("Project deleted");
-      }
+      await db.deleteProject(projectId);
+      setProjects(projects.filter(p => p.id !== projectId));
+      toast.success("Project deleted");
     } catch (e) {
+      console.error("Failed to delete project:", e);
       toast.error("Failed to delete project");
     }
   };

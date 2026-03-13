@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Copy, Check, Trash2, X, ChevronRight, Users } from "lucide-react";
+import * as db from "@/services/db";
 
 const DuplicatesPage = () => {
   const navigate = useNavigate();
@@ -22,12 +23,10 @@ const DuplicatesPage = () => {
 
   const fetchDuplicates = async () => {
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/duplicates`);
-      if (res.ok) {
-        const data = await res.json();
-        setDuplicates(data);
-      }
+      const contacts = await db.getContactsByProject(currentProject.id, { duplicate_status: "potential_duplicate" });
+      setDuplicates(contacts);
     } catch (e) {
+      console.error("Failed to load duplicates:", e);
       toast.error("Failed to load duplicates");
     } finally {
       setLoading(false);
@@ -37,14 +36,11 @@ const DuplicatesPage = () => {
   const keepContact = async (e, contactId) => {
     e.stopPropagation();
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/duplicates/dismiss?contact_id=${contactId}`, {
-        method: "POST"
-      });
-      if (res.ok) {
-        setDuplicates(duplicates.filter(c => c.id !== contactId));
-        toast.success("Contact kept - duplicate flag removed");
-      }
+      await db.updateContact(contactId, { duplicate_status: "none" });
+      setDuplicates(duplicates.filter(c => c.id !== contactId));
+      toast.success("Contact kept - duplicate flag removed");
     } catch (e) {
+      console.error("Failed to update contact:", e);
       toast.error("Failed to update contact");
     }
   };
@@ -55,14 +51,11 @@ const DuplicatesPage = () => {
       return;
     }
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/duplicates/${contactId}`, {
-        method: "DELETE"
-      });
-      if (res.ok) {
-        setDuplicates(duplicates.filter(c => c.id !== contactId));
-        toast.success("Contact deleted permanently");
-      }
+      await db.deleteContact(contactId);
+      setDuplicates(duplicates.filter(c => c.id !== contactId));
+      toast.success("Contact deleted permanently");
     } catch (e) {
+      console.error("Failed to delete contact:", e);
       toast.error("Failed to delete contact");
     }
   };

@@ -1,0 +1,179 @@
+<analysis>**original_problem_statement:**
+Build a mobile-first Progressive Web Application (PWA) optimized for iPhone and iPad. The application's main purpose is to be a comprehensive contact acquisition and management system.
+
+**PRODUCT REQUIREMENTS:**
+- **Inputs:**
+    - Scan single business cards (front only, and front/back).
+    - Scan multiple business cards from a single image.
+    - Import contacts from Excel/XLS/CSV files.
+    - **[NEW REQUIREMENT]** Upload a PDF containing multiple business cards on a page (e.g., A4 sheet) and extract all contacts from it.
+- **Core Functionality:**
+    - The app must use a project-based workflow, where all data is stored within a named project.
+    - Use Anthropic Claude API for all AI tasks: OCR from images, data validation, plausibility checks, duplicate detection, and distinguishing between brand and legal company names.
+    - Implement a robust data validation and duplicate detection engine with a manual review interface for uncertain cases.
+    - Consolidate all contacts and companies into a master data store.
+- **Data Persistence & Accessibility:**
+    - **[CRITICAL CHANGE]** The application must use Google Drive/Sheets as its primary database, replacing the initial MongoDB implementation.
+    - Use Emergent-managed Google Authentication for user login.
+    - Upon first login, create a root folder Business card scanner in the user's Google Drive.
+    - For each new project in the app, create a corresponding subfolder in Google Drive.
+    - Within each project folder, store data in separate Google Sheets files (e.g., Contacts, Companies).
+    - This architecture is required to ensure data persistence across application deployments and enable multi-device access with the same Google account.
+- **User Interface:**
+    - Mobile-first, touch-friendly PWA.
+    - A settings page to manage the Anthropic API key and Claude model.
+    - Sections for Projects, Scan, Import, Review, Duplicates, and Export.
+- **Export:**
+    - Export the consolidated data to a master XLSX workbook or CSV files.
+
+**User's preferred language**: The user is Italian but has specified that the application's language and all communication must be in **English**. The agent has been responding in Italian recently, which is incorrect. The next agent must communicate in English.
+
+**what currently exists?**
+The application is a full-stack React (frontend) and FastAPI (backend) PWA. Initially built with MongoDB, it is currently undergoing a major architectural refactor to use Google Drive and Google Sheets as the data backend. Most of the UI components and pages are in place, but the backend logic is being completely rewritten. The app includes features for single card scanning, batch PDF scanning, and project management. Performance optimizations for image compression have also been implemented.
+
+**Last working item**:
+- **Last item agent was working:** The agent was performing a major architectural refactor to replace the entire MongoDB-based data layer with an integration with Google Drive and Google Sheets. This was prompted by the user's request for persistent, multi-device data storage that survives app redeployments. The agent had just started rewriting the backend  to use the Google APIs for authentication, file/folder creation in Drive, and data manipulation in Sheets.
+- **Status:** IN PROGRESS
+- **Agent Testing Done:** N
+- **Which testing method agent to use?** both
+- **User Testing Done:** N
+
+**All Pending/In progress Issue list**:
+- **Issue 1:** The user reported that deleting a duplicate contact from the app's UI did not remove it from the database, causing it to reappear in the Excel export. (PRIORITY: P1)
+- **Issue 2:** User reported that redeploying the application wiped all existing data (projects, contacts). (PRIORITY: P0 - This is being addressed by the Google Sheets migration).
+
+**Issues Detail:**
+- **Issue 1:**
+    - **Attempted fixes:** The agent correctly identified that the dismiss function only changed a status flag. It implemented a new  endpoint and updated the UI to give the user Keep and Delete options. It also modified the export logic to correctly reflect the database state. However, the user then requested that *any* deletion should be a hard delete from the database. The agent updated the logic accordingly, ensuring  is called and that the export function simply dumps the current database state.
+    - **Next debug checklist:** After the Google Sheets migration is complete, the deletion logic must be re-implemented and thoroughly tested. This involves:
+        1.  Implementing a  function for Google Sheets in .
+        2.  Connecting the Delete button in  to the new API endpoint that triggers the  function.
+        3.  Testing the end-to-end flow: find a duplicate, delete it, and then run an export to verify it is gone from the exported Google Sheet.
+    - **Why fix this issue and what will be achieved with the fix?** To ensure that when a user deletes a record, it is permanently removed from the system and does not appear in future exports, maintaining data integrity.
+    - **Status:** IN PROGRESS (Blocked by Google Sheets Migration)
+    - **Is recurring issue?** Y
+    - **Should Test frontend/backend/both after fix?** both
+    - **Blocked on other issue:** In progress Task List: Task 1: Complete Google Sheets Migration
+- **Issue 2:**
+    - **Attempted fixes:** The agent correctly diagnosed the problem: the use of a non-persistent local MongoDB instance that is reset on every deploy. The user then requested a complete migration to Google Sheets as the database to solve this permanently. The agent started this migration.
+    - **Next debug checklist:** Complete the .
+    - **Why fix this issue and what will be achieved with the fix?** This is a critical failure. Fixing it will provide the data persistence the user requires, making the application usable for its intended long-term purpose.
+    - **Status:** IN PROGRESS
+    - **Is recurring issue?** Y
+    - **Should Test frontend/backend/both after fix?** both
+    - **Blocked on other issue:** None
+
+**In progress Task List**:
+- **Task 1:** Complete Google Sheets Migration (PRIORITY: P0)
+
+**Task Detail:**
+- **Task 1:**
+    - **Where to resume:** The agent has started rewriting . The next steps are:
+        1.  Complete the implementation of all CRUD (Create, Read, Update, Delete) functions using the  and  libraries. This includes functions for:
+            -   Managing Google authentication (login, logout, token refresh).
+            -   Creating Drive folders for projects.
+            -   Creating Google Sheets for , , etc., within project folders.
+            -   Reading and writing rows to these sheets.
+        2.  Refactor all existing API endpoints in  to call these new Google Sheets functions instead of MongoDB functions.
+        3.  Update the frontend to handle the Google Auth login flow. This will involve creating a login page/button and managing the user's authentication state.
+        4.  Modify frontend API calls if the structure of the backend endpoints changes.
+    - **What will be achieved with this?** The application's backend will be fully migrated from MongoDB to Google Drive/Sheets, providing persistent, cloud-based, multi-device data storage as requested by the user. This will resolve the critical data loss issue.
+    - **Status:** IN PROGRESS
+    - **Should Test frontend/backend/both after fix?** both
+    - **Blocked on something:** No
+
+**Upcoming and Future Tasks**
+- **Upcoming Tasks:**
+    - **P1:** Re-test and verify performance optimizations for image scanning after the Google Sheets migration. The previous fixes were implemented but not user-verified on the new architecture.
+    - **P1:** Ensure the clickable stats on the project detail page (, , , ) navigate to the correct filtered views after the migration.
+    - **P1:** Verify that the improved address extraction (, , ) works correctly with the new Google Sheets data structure.
+
+**Completed work in this session**
+- **Recently completed:**
+    - **PDF Batch Scanning:** Implemented a new feature to upload a PDF with multiple business cards, convert pages to images, and use a single Claude call per page to extract all contacts efficiently.
+    - **Image Size/Performance Optimization:** Implemented client-side image compression () and backend PDF image optimization to significantly speed up the scanning process.
+    - **Clickable Project Stats:** Made the statistics cards on the project detail page clickable, navigating the user to the respective lists.
+    - **Improved Address Extraction:** Updated the Claude prompts to extract , , and  into separate fields.
+    - **Duplicate Deletion Logic:** Implemented a hard-delete mechanism for duplicates, ensuring they are removed from the database and subsequent exports.
+
+**Earlier issues found/mentioned but not fixed**
+- The agent has been correctly identifying and attempting to fix issues as they arise. There are no major missed issues. The main challenge is the scale of the current refactoring task.
+
+**Known issue recurrence from previous fork**
+- None.
+
+**Code Architecture**
+
+**Key Technical Concepts**
+- **Frontend:** React, Tailwind CSS, Shadcn/UI, Framer Motion
+- **Backend:** FastAPI (Python)
+- **Database:** ** (being replaced) ->  (target)**
+- **AI:** Anthropic Claude (Sonnet 4.5) via  for OCR and data processing.
+- **Authentication:** ** (initially) ->  (target)**
+- **Deployment:** PWA hosted on Emergent platform.
+
+**key DB schema**
+The database is being migrated to Google Sheets. The schema will be represented as columns in different sheets within a project-specific folder in Google Drive.
+- ** Sheet:** , , , , , , , , , , , , etc.
+- ** Sheet:** , , , , , , , , , etc.
+
+**changes in tech stack**
+- **Database:** Migrating from **MongoDB** to **Google Drive/Google Sheets**. This is a fundamental architectural change.
+- **Authentication:** Migrating from no authentication to **Emergent-managed Google Auth**.
+
+**All files of reference**
+- : The main backend file, currently undergoing a complete rewrite to replace all MongoDB logic with Google Sheets API interactions.
+- : The recently added page for handling PDF batch uploads.
+- : UI for project details, where clickable stats were implemented.
+- : The page where the Keep and Delete logic for duplicates was implemented.
+- : The new hook created to handle client-side image compression for performance.
+
+**key api endpoints**
+- : (To be implemented) Handles Google authentication.
+- : Creates a new project (will create a new folder in Google Drive).
+- : Lists all projects.
+- : Scans a single business card image.
+- : Scans a batch PDF file.
+- : Deletes a contact.
+
+**Critical Info for New Agent**
+- **PRIORITY #1: COMPLETE THE GOOGLE SHEETS MIGRATION.** The user's core problem is data persistence. Do not work on any other feature or bug until the application is fully functional using Google Drive/Sheets as the backend. This is a major rewrite.
+- **COMMUNICATE IN ENGLISH.** The user explicitly requested English, but the previous agent switched to Italian. You must use English for all responses.
+- After the migration, a full regression test of all features (single scan, batch scan, import, duplicate handling, export) is mandatory.
+- The user has accepted that the Google Sheets approach might be slower than MongoDB. Focus on correctness and persistence over raw speed for now.
+
+**documents and test reports created in this job**
+- 
+-  (Note: This is outdated as it was for the MongoDB version)
+-  (Test file created by the agent to validate batch PDF scanning)
+
+**Last 10 User Messages and any pending HUMAN messages**
+1.  **User:** Requests Google Sheets integration for data persistence and multi-device access, using Emergent-managed Google Auth. Accepts data loss and slower performance.
+2.  **User:** Asks to analyze and fix the very slow (~60 seconds) image scan time.
+3.  **User:** Clarifies that deleting a record from the app must delete it from the database permanently, and orphan records are allowed.
+4.  **User:** Specifies that if a duplicate is deleted, it must not appear in the Excel export.
+5.  **User:** Notes that deleting duplicates doesn't seem to update the database, as they still appear in the export.
+6.  **User:** Reports that a redeploy deleted all existing projects and data. This must not happen again.
+7.  **User:** Deploys the app and reports it was successful.
+8.  **User:** Confirms the Failed to create project error was a transient UI issue and the project was created.
+9.  **User:** Reports a Failed to create project error on the deployed app.
+10. **User:** Notes that after scanning a card, the stat cards (Contacts, Companies) are not clickable and that address details are not being extracted correctly.
+
+**Project Health Check:**
+- **Broken:** The entire data layer is broken due to the in-progress migration from MongoDB to Google Sheets. The application is not functional until this is complete.
+- **Mocked:** No components are mocked.
+
+**3rd Party Integrations**
+- **Anthropic Claude Sonnet 4.5:** Used for OCR and data analysis. Uses Emergent LLM Key.
+- **Google Drive / Google Sheets:** (In Progress) To be used as the primary database. Requires user authentication via OAuth.
+- **Emergent-managed Google Auth:** (In Progress) To be used for user login and authorization for Google APIs.
+
+**Testing status**
+- **Testing agent used after significant changes:** YES (but before the Google Sheets migration request).
+- **Troubleshoot agent used after agent stuck in loop:** NO
+- **Test files created:** []
+- **Known regressions:** The entire application is non-functional due to the database migration. All features are implicitly in a regressed state until the migration is complete.
+
+**Credentials to test flow:**
+- The application will require user authentication via Google OAuth. The agent will need to guide the user through the login process to test.
+- The Anthropic API key is managed via the Settings page in the app, but currently uses the Emergent LLM Key.</analysis>

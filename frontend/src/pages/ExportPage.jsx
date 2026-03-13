@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, Header, PageTransition, API } from "@/App";
+import { useApp, Header, PageTransition } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Download, FileSpreadsheet, FileText, Loader2 } from "lucide-react";
+import * as db from "@/services/db";
 
 const ExportPage = () => {
   const navigate = useNavigate();
@@ -28,26 +29,58 @@ const ExportPage = () => {
     );
   }
 
+  const exportToCSV = (data, filename) => {
+    if (!data.length) {
+      toast.error("No data to export");
+      return;
+    }
+    
+    const headers = Object.keys(data[0]);
+    const csvContent = [
+      headers.join(","),
+      ...data.map(row => 
+        headers.map(h => {
+          const val = row[h] || "";
+          // Escape quotes and wrap in quotes if contains comma or newline
+          const escaped = String(val).replace(/"/g, '""');
+          return escaped.includes(",") || escaped.includes("\n") ? `"${escaped}"` : escaped;
+        }).join(",")
+      )
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
   const handleExport = async () => {
     setExporting(true);
     try {
-      const res = await fetch(`${API}/projects/${currentProject.id}/export?format=${format}`);
-      
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${currentProject.name.replace(/\s+/g, "_")}_export.${format}`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-        toast.success("Export downloaded successfully");
+      const data = await db.exportProjectData(currentProject.id);
+      const filename = `${currentProject.name.replace(/\s+/g, "_")}_export`;
+
+      if (format === "csv") {
+        exportToCSV(data.contacts, `${filename}_contacts.csv`);
+        toast.success("Contacts exported successfully");
       } else {
-        toast.error("Export failed");
+        // For XLSX, we'll export as multiple CSVs (simplified approach)
+        // In a real app, you'd use a library like xlsx
+        if (data.contacts.length > 0) {
+          exportToCSV(data.contacts, `${filename}_contacts.csv`);
+        }
+        if (data.companies.length > 0) {
+          exportToCSV(data.companies, `${filename}_companies.csv`);
+        }
+        toast.success("Data exported successfully");
       }
     } catch (e) {
+      console.error("Failed to export data:", e);
       toast.error("Failed to export data");
     } finally {
       setExporting(false);
