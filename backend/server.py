@@ -1470,7 +1470,7 @@ async def reject_contact(project_id: str, contact_id: str):
 
 # --- Export ---
 @api_router.get("/projects/{project_id}/export")
-async def export_project(project_id: str, format: str = "xlsx"):
+async def export_project(project_id: str, format: str = "xlsx", include_rejected: bool = False):
     """Export project data as Excel or CSV"""
     from fastapi.responses import StreamingResponse
     
@@ -1478,8 +1478,20 @@ async def export_project(project_id: str, format: str = "xlsx"):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    contacts = await db.contacts.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
-    companies = await db.companies.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
+    # Filter out rejected contacts unless explicitly requested
+    contact_filter = {"project_id": project_id}
+    if not include_rejected:
+        contact_filter["review_status"] = {"$ne": "rejected"}
+    
+    contacts = await db.contacts.find(contact_filter, {"_id": 0}).to_list(10000)
+    
+    # Get company IDs that are still used by active contacts
+    active_company_ids = set(c.get('company_id') for c in contacts if c.get('company_id'))
+    
+    # Only export companies that have active contacts
+    all_companies = await db.companies.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
+    companies = [c for c in all_companies if c.get('id') in active_company_ids]
+    
     import_logs = await db.import_logs.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
     duplicates = await db.duplicates.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
     ai_audits = await db.ai_audits.find({"record_id": {"$in": [c['id'] for c in contacts]}}, {"_id": 0}).to_list(10000)
