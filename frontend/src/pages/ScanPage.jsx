@@ -9,66 +9,70 @@ import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Camera, Upload, Image, X, Loader2, Check, AlertCircle, FileText } from "lucide-react";
 
-// Compress image to max 4MB (Claude limit is 5MB, we use 4MB for safety)
-const compressImage = (file, maxSizeMB = 4) => {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new window.Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        let width = img.width;
-        let height = img.height;
-        
-        // Calculate max dimensions to reduce file size
-        const maxDimension = 2000; // Max 2000px on any side
-        if (width > maxDimension || height > maxDimension) {
-          if (width > height) {
-            height = Math.round((height * maxDimension) / width);
-            width = maxDimension;
-          } else {
-            width = Math.round((width * maxDimension) / height);
-            height = maxDimension;
+// Fast image compression - optimized for mobile
+const compressImage = (file) => {
+  return new Promise((resolve, reject) => {
+    // Create object URL instead of reading entire file as base64 first
+    const objectUrl = URL.createObjectURL(file);
+    const img = new window.Image();
+    
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl); // Clean up
+      
+      // Target: max 1200px on longest side (sufficient for OCR, much faster)
+      const MAX_SIZE = 1200;
+      let width = img.width;
+      let height = img.height;
+      
+      // Only resize if needed
+      if (width > MAX_SIZE || height > MAX_SIZE) {
+        const ratio = Math.min(MAX_SIZE / width, MAX_SIZE / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+      
+      // Use OffscreenCanvas if available (faster, runs off main thread)
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      
+      const ctx = canvas.getContext("2d", { alpha: false });
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "medium";
+      ctx.drawImage(img, 0, 0, width, height);
+      
+      // Single compression pass with fixed quality (0.7 is good balance)
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error("Failed to compress image"));
+            return;
           }
-        }
-        
-        canvas.width = width;
-        canvas.height = height;
-        
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
-        
-        // Try different quality levels to get under maxSizeMB
-        let quality = 0.85;
-        let base64 = canvas.toDataURL("image/jpeg", quality);
-        
-        // If still too large, reduce quality
-        while (base64.length > maxSizeMB * 1024 * 1024 * 1.37 && quality > 0.3) {
-          quality -= 0.1;
-          base64 = canvas.toDataURL("image/jpeg", quality);
-        }
-        
-        // If still too large, reduce dimensions further
-        if (base64.length > maxSizeMB * 1024 * 1024 * 1.37) {
-          const scale = 0.7;
-          canvas.width = Math.round(width * scale);
-          canvas.height = Math.round(height * scale);
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          base64 = canvas.toDataURL("image/jpeg", 0.8);
-        }
-        
-        const compressedBase64 = base64.split(",")[1];
-        const sizeKB = Math.round(compressedBase64.length * 0.75 / 1024);
-        console.log(`Image compressed: ${img.width}x${img.height} -> ${canvas.width}x${canvas.height}, ~${sizeKB}KB`);
-        
-        resolve({
-          base64: compressedBase64,
-          preview: base64
-        });
-      };
-      img.src = event.target.result;
+          
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = reader.result.split(",")[1];
+            const sizeKB = Math.round(blob.size / 1024);
+            console.log(`Compressed: ${img.width}x${img.height} -> ${width}x${height}, ${sizeKB}KB`);
+            
+            resolve({
+              base64,
+              preview: reader.result
+            });
+          };
+          reader.readAsDataURL(blob);
+        },
+        "image/jpeg",
+        0.7 // Fixed quality - no loops
+      );
     };
-    reader.readAsDataURL(file);
+    
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Failed to load image"));
+    };
+    
+    img.src = objectUrl;
   });
 };
 

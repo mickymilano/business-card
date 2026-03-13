@@ -443,7 +443,7 @@ async def detect_duplicates(project_id: str, contact_data: Dict[str, Any]) -> Li
     
     return duplicates
 
-def convert_pdf_to_images(pdf_bytes: bytes, max_size: int = 1800) -> List[str]:
+def convert_pdf_to_images(pdf_bytes: bytes, max_size: int = 1200) -> List[str]:
     """Convert PDF pages to base64 encoded JPEG images, optimized for Claude"""
     images_base64 = []
     
@@ -453,8 +453,8 @@ def convert_pdf_to_images(pdf_bytes: bytes, max_size: int = 1800) -> List[str]:
     for page_num in range(len(pdf_document)):
         page = pdf_document[page_num]
         
-        # Render at 150 DPI for good quality but manageable size
-        mat = fitz.Matrix(150/72, 150/72)
+        # Render at 100 DPI (lower = faster, still readable for OCR)
+        mat = fitz.Matrix(100/72, 100/72)
         pix = page.get_pixmap(matrix=mat)
         
         # Convert to PIL Image
@@ -466,14 +466,9 @@ def convert_pdf_to_images(pdf_bytes: bytes, max_size: int = 1800) -> List[str]:
             new_size = (int(img.width * ratio), int(img.height * ratio))
             img = img.resize(new_size, PILImage.LANCZOS)
         
-        # Convert to JPEG with compression
+        # Convert to JPEG with lower quality (faster, smaller)
         buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=85, optimize=True)
-        
-        # If still too large (>4MB), reduce quality
-        if buffer.tell() > 4 * 1024 * 1024:
-            buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=60, optimize=True)
+        img.save(buffer, format="JPEG", quality=70, optimize=False)  # optimize=False is faster
         
         buffer.seek(0)
         images_base64.append(base64.b64encode(buffer.read()).decode('utf-8'))
