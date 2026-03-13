@@ -1410,23 +1410,13 @@ async def dismiss_duplicate(project_id: str, contact_id: str):
 @api_router.delete("/projects/{project_id}/duplicates/{contact_id}")
 async def delete_duplicate(project_id: str, contact_id: str):
     """Permanently delete a duplicate contact from database"""
-    # First check if contact exists
+    # Check if contact exists
     contact = await db.contacts.find_one({"id": contact_id, "project_id": project_id}, {"_id": 0})
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
     
-    # Delete the contact
+    # Delete the contact permanently
     await db.contacts.delete_one({"id": contact_id, "project_id": project_id})
-    
-    # If contact had a company, check if other contacts use it
-    if contact.get('company_id'):
-        other_contacts = await db.contacts.count_documents({
-            "project_id": project_id,
-            "company_id": contact['company_id']
-        })
-        # If no other contacts use this company, delete it too
-        if other_contacts == 0:
-            await db.companies.delete_one({"id": contact['company_id'], "project_id": project_id})
     
     # Update project timestamp
     await db.projects.update_one(
@@ -1434,7 +1424,7 @@ async def delete_duplicate(project_id: str, contact_id: str):
         {"$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
     )
     
-    return {"message": "Duplicate deleted permanently"}
+    return {"message": "Contact deleted permanently"}
 
 # --- Review ---
 @api_router.get("/projects/{project_id}/review")
@@ -1470,28 +1460,17 @@ async def reject_contact(project_id: str, contact_id: str):
 
 # --- Export ---
 @api_router.get("/projects/{project_id}/export")
-async def export_project(project_id: str, format: str = "xlsx", include_rejected: bool = False):
-    """Export project data as Excel or CSV"""
+async def export_project(project_id: str, format: str = "xlsx"):
+    """Export project data as Excel or CSV - exports ALL data in database"""
     from fastapi.responses import StreamingResponse
     
     project = await db.projects.find_one({"id": project_id}, {"_id": 0})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # Filter out rejected contacts unless explicitly requested
-    contact_filter = {"project_id": project_id}
-    if not include_rejected:
-        contact_filter["review_status"] = {"$ne": "rejected"}
-    
-    contacts = await db.contacts.find(contact_filter, {"_id": 0}).to_list(10000)
-    
-    # Get company IDs that are still used by active contacts
-    active_company_ids = set(c.get('company_id') for c in contacts if c.get('company_id'))
-    
-    # Only export companies that have active contacts
-    all_companies = await db.companies.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
-    companies = [c for c in all_companies if c.get('id') in active_company_ids]
-    
+    # Export ALL contacts and companies in database (no filters)
+    contacts = await db.contacts.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
+    companies = await db.companies.find({"project_id": project_id}, {"_id": 0}).to_list(10000)
     import_logs = await db.import_logs.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
     duplicates = await db.duplicates.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
     ai_audits = await db.ai_audits.find({"record_id": {"$in": [c['id'] for c in contacts]}}, {"_id": 0}).to_list(10000)
