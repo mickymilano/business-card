@@ -33,6 +33,10 @@ The FastAPI backend now serves only AI operations:
 
 ### ✅ Business Card Scanning
 - Single card scanning (front + optional back)
+- **NEW:** Automatic grayscale conversion for smaller file size
+- **NEW:** Live camera feed with edge detection
+- **NEW:** Auto-capture when business card is detected
+- Manual capture fallback button
 - Client-side image compression for performance
 - AI-powered OCR extraction with Claude
 
@@ -190,6 +194,9 @@ Key-value pairs for app configuration.
 - **NEW:** PWA icon "ES" (blue background, white letters)
 - **NEW:** Backup & Sync feature for data transfer between devices
 - **NEW:** Full backup export/import with JSON files
+- **NEW:** Automatic grayscale conversion for images (smaller size, faster processing)
+- **NEW:** Live camera with edge detection for auto-capture
+- **NEW:** Italian UI for scan and backup pages
 - Apple touch icon and PWA manifest configured
 
 ### v1.0.0 (Previous)
