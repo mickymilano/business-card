@@ -13,7 +13,7 @@ import { motion } from "framer-motion";
 import { 
   Save, Trash2, Check, X, Mail, Phone, Building2, 
   Globe, Linkedin, User, Briefcase, MapPin, AlertCircle,
-  Edit2, Eye
+  Edit2, Eye, ChevronRight
 } from "lucide-react";
 import * as db from "@/services/db";
 
@@ -22,6 +22,7 @@ const ContactDetailPage = () => {
   const navigate = useNavigate();
   const { currentProject } = useApp();
   const [contact, setContact] = useState(null);
+  const [company, setCompany] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -39,13 +40,25 @@ const ContactDetailPage = () => {
       if (data) {
         setContact(data);
         setFormData(data);
+        // Find associated company
+        if (data.company_id || data.company_name_display) {
+          const companies = await db.getCompaniesByProject(currentProject.id);
+          const associatedCompany = companies.find(c => 
+            c.id === data.company_id ||
+            c.company_display_name === data.company_name_display ||
+            c.brand_name === data.company_name_display
+          );
+          if (associatedCompany) {
+            setCompany(associatedCompany);
+          }
+        }
       } else {
-        toast.error("Contact not found");
+        toast.error("Contatto non trovato");
         navigate("/contacts");
       }
     } catch (e) {
       console.error("Failed to load contact:", e);
-      toast.error("Failed to load contact");
+      toast.error("Errore nel caricamento");
     } finally {
       setLoading(false);
     }
@@ -300,7 +313,9 @@ const ContactDetailPage = () => {
                 const handleClick = () => {
                   if (!value) return;
                   if (field.type === 'email') {
-                    window.location.href = `mailto:${value}`;
+                    // Email with project name as subject for reminder
+                    const subject = encodeURIComponent(`Piacere di averti conosciuto - ${currentProject?.name || ''}`);
+                    window.location.href = `mailto:${value}?subject=${subject}`;
                   } else if (field.type === 'tel') {
                     window.location.href = `tel:${value.replace(/\s/g, '')}`;
                   } else if (field.type === 'url' || field.key === 'linkedin_url') {
@@ -345,6 +360,44 @@ const ContactDetailPage = () => {
             </CardContent>
           </Card>
         ))}
+
+        {/* Associated Company */}
+        {(contact?.company_name_display || company) && !editing && (
+          <Card className="border mb-4">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-['Manrope'] uppercase tracking-widest text-muted-foreground">
+                Azienda
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {company ? (
+                <div
+                  onClick={() => navigate(`/company/${company.id}`)}
+                  className="flex items-center justify-between p-3 rounded-lg bg-secondary/50 hover:bg-secondary cursor-pointer transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                      <Building2 className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-sm">
+                        {company.company_display_name || company.brand_name || company.legal_company_name}
+                      </p>
+                      {company.industry && (
+                        <p className="text-xs text-muted-foreground">{company.industry}</p>
+                      )}
+                    </div>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {contact?.company_name_display}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Notes */}
         <Card className="border mb-4">

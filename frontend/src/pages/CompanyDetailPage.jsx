@@ -11,7 +11,7 @@ import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { 
   Building2, Globe, Phone, Mail, MapPin, Trash2, 
-  Edit2, Save, X, ExternalLink, Briefcase
+  Edit2, Save, X, ExternalLink, Briefcase, User, ChevronRight
 } from "lucide-react";
 import * as db from "@/services/db";
 
@@ -20,6 +20,7 @@ const CompanyDetailPage = () => {
   const navigate = useNavigate();
   const { currentProject } = useApp();
   const [company, setCompany] = useState(null);
+  const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -28,6 +29,7 @@ const CompanyDetailPage = () => {
   useEffect(() => {
     if (currentProject && companyId) {
       fetchCompany();
+      fetchContacts();
     }
   }, [currentProject, companyId]);
 
@@ -48,6 +50,28 @@ const CompanyDetailPage = () => {
       setLoading(false);
     }
   };
+
+  const fetchContacts = async () => {
+    try {
+      // Get all contacts for this project and filter by company
+      const allContacts = await db.getContactsByProject(currentProject.id);
+      const companyContacts = allContacts.filter(c => 
+        c.company_id === companyId || 
+        c.company_name_display === company?.company_display_name ||
+        c.company_name_display === company?.brand_name
+      );
+      setContacts(companyContacts);
+    } catch (e) {
+      console.error("Failed to load contacts:", e);
+    }
+  };
+
+  // Re-fetch contacts when company data is loaded
+  useEffect(() => {
+    if (company && currentProject) {
+      fetchContacts();
+    }
+  }, [company]);
 
   const handleChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -275,11 +299,52 @@ const CompanyDetailPage = () => {
           </CardContent>
         </Card>
 
-        {/* Contact Info */}
+        {/* Associated Contacts */}
         <Card className="border mb-4">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Contatti
+              Persone Associate
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {contacts.length > 0 ? (
+              <div className="space-y-2">
+                {contacts.map((contact) => (
+                  <div
+                    key={contact.id}
+                    onClick={() => navigate(`/contact/${contact.id}`)}
+                    className="flex items-center justify-between p-3 rounded-lg bg-secondary/50 hover:bg-secondary cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                        <User className="h-5 w-5 text-primary" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-sm">
+                          {contact.full_name || `${contact.first_name} ${contact.last_name}`.trim() || "—"}
+                        </p>
+                        {contact.job_title && (
+                          <p className="text-xs text-muted-foreground">{contact.job_title}</p>
+                        )}
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                Nessun contatto associato
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Company Contact Info */}
+        <Card className="border mb-4">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Contatti Azienda
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
