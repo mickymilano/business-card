@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useApp, Header, PageTransition, API } from "@/App";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ const BatchScanPage = () => {
   const navigate = useNavigate();
   const { currentProject } = useApp();
   const fileInputRef = useRef(null);
+  const pollIntervalRef = useRef(null);
   
   const [file, setFile] = useState(null);
   const [processing, setProcessing] = useState(false);
@@ -28,6 +29,15 @@ const BatchScanPage = () => {
   const [currentPage, setCurrentPage] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, []);
 
   if (!currentProject) {
     return (
@@ -68,10 +78,12 @@ const BatchScanPage = () => {
     try {
       const res = await fetch(`${API}/scan/batch/${id}`);
       if (!res.ok) {
-        throw new Error("Errore nel recupero stato");
+        console.error("Poll failed:", res.status);
+        return false; // Continue polling
       }
       
       const data = await res.json();
+      console.log("Poll result:", data.status, data.progress, data.contacts_found);
       
       setProgress(data.progress);
       setCurrentPage(data.current_page);
@@ -79,62 +91,68 @@ const BatchScanPage = () => {
       
       if (data.status === "processing") {
         setStatusMessage(`Elaborazione pagina ${data.current_page} di ${data.total_pages}...`);
+        return false; // Continue polling
       } else if (data.status === "queued") {
         setStatusMessage("In coda...");
-      }
-      
-      if (data.status === "completed") {
+        return false; // Continue polling
+      } else if (data.status === "completed") {
+        setStatusMessage("Salvataggio contatti...");
+        
         // Save all contacts to IndexedDB
         let contactsCreated = 0;
         let needsReview = 0;
         
         for (const extractedCard of data.contacts || []) {
-          const contactData = {
-            first_name: extractedCard.first_name || '',
-            middle_name: extractedCard.middle_name || '',
-            last_name: extractedCard.last_name || '',
-            full_name: `${extractedCard.first_name || ''} ${extractedCard.last_name || ''}`.trim(),
-            full_name_original: extractedCard.full_name_original || '',
-            job_title: extractedCard.job_title || '',
-            department: extractedCard.department || '',
-            mobile_phone: extractedCard.mobile_phone || '',
-            direct_phone: extractedCard.direct_phone || '',
-            office_phone: extractedCard.office_phone || '',
-            primary_email: extractedCard.primary_email || '',
-            secondary_email: extractedCard.secondary_email || '',
-            linkedin_url: extractedCard.linkedin_url || '',
-            personal_website: extractedCard.personal_website || '',
-            company_name_display: extractedCard.company_name_display || '',
-            brand_name: extractedCard.brand_name || '',
-            legal_company_name: extractedCard.legal_company_name || '',
-            address: extractedCard.address || '',
-            postal_code: extractedCard.postal_code || '',
-            country: extractedCard.country || '',
-            import_source_type: 'batch_pdf',
-            import_source_file: file.name,
-            confidence_score: extractedCard.confidence_score || 0,
-            validation_status: 'pending',
-            review_status: (extractedCard.confidence_score || 0) < 80 ? 'needs_review' : 'approved',
-            duplicate_status: 'none',
-            ai_notes: extractedCard.ai_notes || ''
-          };
-
-          await db.createContact(currentProject.id, contactData);
-          contactsCreated++;
-          if ((extractedCard.confidence_score || 0) < 80) needsReview++;
-          
-          if (extractedCard.company_name_display || extractedCard.brand_name) {
-            await db.createCompany(currentProject.id, {
-              legal_company_name: extractedCard.legal_company_name || '',
+          try {
+            const contactData = {
+              first_name: extractedCard.first_name || '',
+              middle_name: extractedCard.middle_name || '',
+              last_name: extractedCard.last_name || '',
+              full_name: `${extractedCard.first_name || ''} ${extractedCard.last_name || ''}`.trim(),
+              full_name_original: extractedCard.full_name_original || '',
+              job_title: extractedCard.job_title || '',
+              department: extractedCard.department || '',
+              mobile_phone: extractedCard.mobile_phone || '',
+              direct_phone: extractedCard.direct_phone || '',
+              office_phone: extractedCard.office_phone || '',
+              primary_email: extractedCard.primary_email || '',
+              secondary_email: extractedCard.secondary_email || '',
+              linkedin_url: extractedCard.linkedin_url || '',
+              personal_website: extractedCard.personal_website || '',
+              company_name_display: extractedCard.company_name_display || '',
               brand_name: extractedCard.brand_name || '',
-              company_display_name: extractedCard.company_name_display || '',
-              website: extractedCard.website || '',
-              main_phone: extractedCard.office_phone || '',
+              legal_company_name: extractedCard.legal_company_name || '',
               address: extractedCard.address || '',
               postal_code: extractedCard.postal_code || '',
               country: extractedCard.country || '',
-              industry: extractedCard.industry || ''
-            });
+              import_source_type: 'batch_pdf',
+              import_source_file: file?.name || 'batch.pdf',
+              confidence_score: extractedCard.confidence_score || 0,
+              validation_status: 'pending',
+              review_status: (extractedCard.confidence_score || 0) < 80 ? 'needs_review' : 'approved',
+              duplicate_status: 'none',
+              ai_notes: extractedCard.ai_notes || ''
+            };
+
+            await db.createContact(currentProject.id, contactData);
+            contactsCreated++;
+            if ((extractedCard.confidence_score || 0) < 80) needsReview++;
+            
+            if (extractedCard.company_name_display || extractedCard.brand_name) {
+              await db.createCompany(currentProject.id, {
+                legal_company_name: extractedCard.legal_company_name || '',
+                brand_name: extractedCard.brand_name || '',
+                company_display_name: extractedCard.company_name_display || '',
+                website: extractedCard.website || '',
+                main_phone: extractedCard.office_phone || '',
+                address: extractedCard.address || '',
+                postal_code: extractedCard.postal_code || '',
+                country: extractedCard.country || '',
+                industry: extractedCard.industry || ''
+              });
+            }
+          } catch (saveErr) {
+            console.error("Error saving contact:", saveErr);
           }
         }
 
@@ -157,10 +175,11 @@ const BatchScanPage = () => {
         return true; // Stop polling
       }
       
-      return false; // Continue polling
+      return false; // Continue polling for unknown status
     } catch (e) {
       console.error("Poll error:", e);
-      return false; // Continue polling
+      // Don't stop polling on network errors, just retry
+      return false;
     }
   };
 
@@ -190,13 +209,14 @@ const BatchScanPage = () => {
         setStatusMessage(`Avviata elaborazione di ${data.total_pages} pagine...`);
         toast.info(`Elaborazione ${data.total_pages} pagine. Attendere...`);
         
-        // Start polling
-        const pollInterval = setInterval(async () => {
+        // Start polling with ref for cleanup
+        pollIntervalRef.current = setInterval(async () => {
           const done = await pollJobStatus(id);
-          if (done) {
-            clearInterval(pollInterval);
+          if (done && pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
           }
-        }, 2000); // Poll every 2 seconds
+        }, 2500); // Poll every 2.5 seconds
         
       } else {
         const errorData = await res.json();
