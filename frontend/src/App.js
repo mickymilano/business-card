@@ -27,6 +27,7 @@ import ImportPage from "@/pages/ImportPage";
 import ContactsPage from "@/pages/ContactsPage";
 import ContactDetailPage from "@/pages/ContactDetailPage";
 import CompaniesPage from "@/pages/CompaniesPage";
+import CompanyDetailPage from "@/pages/CompanyDetailPage";
 import ReviewPage from "@/pages/ReviewPage";
 import DuplicatesPage from "@/pages/DuplicatesPage";
 import ExportPage from "@/pages/ExportPage";
@@ -190,6 +191,7 @@ function AppContent() {
             <Route path="/export" element={<ExportPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/backup" element={<BackupPage />} />
+            <Route path="/company/:companyId" element={<CompanyDetailPage />} />
           </Routes>
         </AnimatePresence>
         <BottomNav />

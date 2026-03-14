@@ -106,7 +106,8 @@ const CompaniesPage = () => {
                 transition={{ delay: index * 0.02 }}
               >
                 <Card 
-                  className="border hover:shadow-md transition-all"
+                  className="border hover:shadow-md transition-all cursor-pointer"
+                  onClick={() => navigate(`/company/${company.id}`)}
                   data-testid={`company-card-${company.id}`}
                 >
                   <CardContent className="p-4">
@@ -148,6 +149,7 @@ const CompaniesPage = () => {
                           )}
                         </div>
                       </div>
+                      <ChevronRight className="h-5 w-5 text-muted-foreground flex-shrink-0" />
                     </div>
                   </CardContent>
                 </Card>
