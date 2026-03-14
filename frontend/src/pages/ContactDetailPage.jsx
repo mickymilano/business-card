@@ -295,27 +295,53 @@ const ContactDetailPage = () => {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {section.fields.map((field) => (
-                <div key={field.key}>
-                  <Label className="text-xs text-muted-foreground flex items-center gap-1">
-                    <field.icon className="h-3 w-3" />
-                    {field.label}
-                  </Label>
-                  {editing ? (
-                    <Input
-                      value={formData[field.key] || ""}
-                      onChange={(e) => handleChange(field.key, e.target.value)}
-                      type={field.type || "text"}
-                      className="mt-1 h-10"
-                      data-testid={`input-${field.key}`}
-                    />
-                  ) : (
-                    <p className="text-sm mt-1">
-                      {contact?.[field.key] || <span className="text-muted-foreground">—</span>}
-                    </p>
-                  )}
-                </div>
-              ))}
+              {section.fields.map((field) => {
+                const value = contact?.[field.key];
+                const handleClick = () => {
+                  if (!value) return;
+                  if (field.type === 'email') {
+                    window.location.href = `mailto:${value}`;
+                  } else if (field.type === 'tel') {
+                    window.location.href = `tel:${value.replace(/\s/g, '')}`;
+                  } else if (field.type === 'url' || field.key === 'linkedin_url') {
+                    window.open(value.startsWith('http') ? value : `https://${value}`, '_blank');
+                  } else if (field.key === 'address') {
+                    const addressParts = [value, contact?.postal_code, contact?.country].filter(Boolean);
+                    const query = encodeURIComponent(addressParts.join(', '));
+                    window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
+                  }
+                };
+                const isClickable = value && (field.type === 'email' || field.type === 'tel' || field.type === 'url' || field.key === 'linkedin_url' || field.key === 'address');
+                
+                return (
+                  <div key={field.key}>
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                      <field.icon className="h-3 w-3" />
+                      {field.label}
+                    </Label>
+                    {editing ? (
+                      <Input
+                        value={formData[field.key] || ""}
+                        onChange={(e) => handleChange(field.key, e.target.value)}
+                        type={field.type || "text"}
+                        className="mt-1 h-10"
+                        data-testid={`input-${field.key}`}
+                      />
+                    ) : isClickable ? (
+                      <button
+                        onClick={handleClick}
+                        className="text-sm mt-1 text-primary hover:underline text-left block"
+                      >
+                        {value}
+                      </button>
+                    ) : (
+                      <p className="text-sm mt-1">
+                        {value || <span className="text-muted-foreground">—</span>}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </CardContent>
           </Card>
         ))}

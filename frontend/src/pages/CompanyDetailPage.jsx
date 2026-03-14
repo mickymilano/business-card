@@ -99,15 +99,6 @@ const CompanyDetailPage = () => {
     }
   };
 
-  const openWebsite = (url) => {
-    if (!url) return;
-    let fullUrl = url;
-    if (!url.startsWith('http')) {
-      fullUrl = 'https://' + url;
-    }
-    window.open(fullUrl, '_blank');
-  };
-
   if (!currentProject) {
     return (
       <PageTransition>
@@ -147,10 +138,33 @@ const CompanyDetailPage = () => {
     );
   }
 
-  const Field = ({ label, field, icon: Icon, type = "text", link = false }) => {
+  const Field = ({ label, field, icon: Icon, type = "text", linkType = null }) => {
     const value = editing ? formData[field] : company[field];
     
     if (!editing && !value) return null;
+
+    const handleLinkClick = () => {
+      if (!value) return;
+      
+      switch (linkType) {
+        case 'website':
+          window.open(value.startsWith('http') ? value : `https://${value}`, '_blank');
+          break;
+        case 'email':
+          window.location.href = `mailto:${value}`;
+          break;
+        case 'phone':
+          window.location.href = `tel:${value.replace(/\s/g, '')}`;
+          break;
+        case 'address':
+          const addressParts = [value, company.city, company.postal_code, company.country].filter(Boolean);
+          const query = encodeURIComponent(addressParts.join(', '));
+          window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
+          break;
+        default:
+          break;
+      }
+    };
     
     return (
       <div className="space-y-1">
@@ -167,13 +181,22 @@ const CompanyDetailPage = () => {
           />
         ) : (
           <div className="flex items-center gap-2">
-            <p className="text-sm font-medium">{value}</p>
-            {link && value && (
+            {linkType ? (
+              <button
+                onClick={handleLinkClick}
+                className="text-sm font-medium text-primary hover:underline text-left"
+              >
+                {value}
+              </button>
+            ) : (
+              <p className="text-sm font-medium">{value}</p>
+            )}
+            {linkType && (
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6"
-                onClick={() => openWebsite(value)}
+                onClick={handleLinkClick}
               >
                 <ExternalLink className="h-3 w-3" />
               </Button>
@@ -260,9 +283,9 @@ const CompanyDetailPage = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Field label="Sito Web" field="website" icon={Globe} link />
-            <Field label="Telefono" field="main_phone" icon={Phone} type="tel" />
-            <Field label="Email" field="main_email" icon={Mail} type="email" />
+            <Field label="Sito Web" field="website" icon={Globe} linkType="website" />
+            <Field label="Telefono" field="main_phone" icon={Phone} type="tel" linkType="phone" />
+            <Field label="Email" field="main_email" icon={Mail} type="email" linkType="email" />
           </CardContent>
         </Card>
 
@@ -274,7 +297,7 @@ const CompanyDetailPage = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Field label="Indirizzo" field="address" icon={MapPin} />
+            <Field label="Indirizzo" field="address" icon={MapPin} linkType="address" />
             <Field label="Città" field="city" icon={MapPin} />
             <Field label="CAP" field="postal_code" icon={MapPin} />
             <Field label="Provincia/Regione" field="province_region" icon={MapPin} />
