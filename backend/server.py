@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -267,7 +267,7 @@ async def scan_single_card(scan: ScanRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/scan/batch")
-async def scan_batch_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def scan_batch_pdf(file: UploadFile = File(...)):
     """Start batch PDF processing - returns job ID for polling"""
     try:
         # Read PDF
@@ -293,8 +293,8 @@ async def scan_batch_pdf(background_tasks: BackgroundTasks, file: UploadFile = F
             "error": None
         }
         
-        # Start background processing
-        background_tasks.add_task(process_batch_pdf_async, job_id, pdf_bytes)
+        # Start background processing using asyncio.create_task
+        asyncio.create_task(process_batch_pdf_async(job_id, pdf_bytes))
         
         logger.info(f"Started batch job {job_id} with {total_pages} pages")
         
