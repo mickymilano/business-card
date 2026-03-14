@@ -270,8 +270,22 @@ async def scan_single_card(scan: ScanRequest):
 async def scan_batch_pdf(file: UploadFile = File(...)):
     """Start batch PDF processing - returns job ID for polling"""
     try:
-        # Read PDF
-        pdf_bytes = await file.read()
+        # Read PDF in chunks to handle large files
+        chunks = []
+        total_size = 0
+        max_size = 50 * 1024 * 1024  # 50MB limit
+        
+        while True:
+            chunk = await file.read(1024 * 1024)  # Read 1MB at a time
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total_size += len(chunk)
+            if total_size > max_size:
+                raise HTTPException(status_code=400, detail="File too large (max 50MB)")
+        
+        pdf_bytes = b''.join(chunks)
+        logger.info(f"Received PDF file: {total_size} bytes")
         
         # Quick validation
         try:
