@@ -41,9 +41,13 @@ The FastAPI backend now serves only AI operations:
 - AI-powered OCR extraction with Claude
 
 ### ✅ Batch PDF Processing
-- Upload PDF with multiple business cards per page
+- Upload PDF with multiple business cards per page (up to 10 per page)
+- **NEW:** Background job processing with polling (no timeout issues)
+- **NEW:** Real-time progress updates (page X of Y)
+- **NEW:** Grayscale conversion for faster processing
 - Automatic page-by-page extraction
-- Progress tracking
+- Progress tracking with status messages
+- Italian UI
 
 ### ✅ Excel/CSV Import
 - Client-side file parsing with XLSX library

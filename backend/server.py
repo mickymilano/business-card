@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -11,6 +11,7 @@ import uuid
 import base64
 import json
 import io
+import asyncio
 import fitz  # PyMuPDF for PDF processing
 from PIL import Image as PILImage
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
@@ -25,6 +26,12 @@ api_router = APIRouter(prefix="/api")
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ===================
+# JOB STORAGE (in-memory for simplicity)
+# ===================
+
+batch_jobs: Dict[str, Dict[str, Any]] = {}
 
 # ===================
 # MODELS
@@ -155,7 +162,93 @@ async def extract_multiple_cards(image_base64: str) -> List[Dict[str, Any]]:
         raise HTTPException(status_code=500, detail=f"AI extraction failed: {str(e)}")
 
 # ===================
-# SCAN ROUTES (AI-only, no data storage)
+# BACKGROUND TASK FOR BATCH PROCESSING
+# ===================
+
+async def process_batch_pdf_async(job_id: str, pdf_bytes: bytes):
+    """Process PDF in background"""
+    try:
+        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total_pages = len(pdf_document)
+        
+        batch_jobs[job_id]["total_pages"] = total_pages
+        batch_jobs[job_id]["status"] = "processing"
+        
+        all_contacts = []
+        page_results = []
+        
+        for page_num in range(total_pages):
+            # Update progress
+            batch_jobs[job_id]["current_page"] = page_num + 1
+            batch_jobs[job_id]["progress"] = int((page_num / total_pages) * 100)
+            
+            page = pdf_document[page_num]
+            
+            # Convert page to image (optimized resolution)
+            mat = fitz.Matrix(1.5, 1.5)
+            pix = page.get_pixmap(matrix=mat)
+            
+            # Convert to PIL Image and compress
+            img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Convert to grayscale for smaller size
+            img = img.convert("L").convert("RGB")
+            
+            # Resize if too large
+            max_size = 1400
+            if img.width > max_size or img.height > max_size:
+                ratio = min(max_size / img.width, max_size / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, PILImage.Resampling.LANCZOS)
+            
+            # Convert to base64
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=70)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            
+            try:
+                # Extract all cards from this page
+                cards = await extract_multiple_cards(image_base64)
+                all_contacts.extend(cards)
+                page_results.append({
+                    "page": page_num + 1,
+                    "cards_found": len(cards),
+                    "status": "success"
+                })
+                logger.info(f"Job {job_id} - Page {page_num + 1}: Found {len(cards)} cards")
+                
+                # Update job with partial results
+                batch_jobs[job_id]["contacts"] = all_contacts
+                batch_jobs[job_id]["page_results"] = page_results
+                
+            except Exception as e:
+                logger.error(f"Job {job_id} - Page {page_num + 1} error: {e}")
+                page_results.append({
+                    "page": page_num + 1,
+                    "cards_found": 0,
+                    "status": "error",
+                    "error": str(e)
+                })
+        
+        # Store total pages before closing
+        final_total_pages = total_pages
+        pdf_document.close()
+        
+        # Mark job as complete
+        batch_jobs[job_id]["status"] = "completed"
+        batch_jobs[job_id]["progress"] = 100
+        batch_jobs[job_id]["contacts"] = all_contacts
+        batch_jobs[job_id]["page_results"] = page_results
+        
+        logger.info(f"Job {job_id} completed: {len(all_contacts)} contacts from {final_total_pages} pages")
+        
+    except Exception as e:
+        logger.error(f"Job {job_id} failed: {e}")
+        batch_jobs[job_id]["status"] = "failed"
+        batch_jobs[job_id]["error"] = str(e)
+
+# ===================
+# SCAN ROUTES
 # ===================
 
 @api_router.post("/scan")
@@ -174,67 +267,69 @@ async def scan_single_card(scan: ScanRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/scan/batch")
-async def scan_batch_pdf(file: UploadFile = File(...)):
-    """Process a PDF with multiple business cards per page (AI only)"""
+async def scan_batch_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Start batch PDF processing - returns job ID for polling"""
     try:
         # Read PDF
         pdf_bytes = await file.read()
-        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
         
-        all_contacts = []
-        page_results = []
+        # Quick validation
+        try:
+            pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(pdf_doc)
+            pdf_doc.close()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid PDF file: {str(e)}")
         
-        for page_num in range(len(pdf_document)):
-            page = pdf_document[page_num]
-            
-            # Convert page to image (optimized resolution)
-            mat = fitz.Matrix(1.5, 1.5)  # 1.5x zoom for good OCR
-            pix = page.get_pixmap(matrix=mat)
-            
-            # Convert to PIL Image and compress
-            img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            
-            # Resize if too large
-            max_size = 1500
-            if img.width > max_size or img.height > max_size:
-                ratio = min(max_size / img.width, max_size / img.height)
-                new_size = (int(img.width * ratio), int(img.height * ratio))
-                img = img.resize(new_size, PILImage.Resampling.LANCZOS)
-            
-            # Convert to base64
-            buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=75)
-            image_base64 = base64.b64encode(buffer.getvalue()).decode()
-            
-            try:
-                # Extract all cards from this page
-                cards = await extract_multiple_cards(image_base64)
-                all_contacts.extend(cards)
-                page_results.append({
-                    "page": page_num + 1,
-                    "cards_found": len(cards),
-                    "status": "success"
-                })
-                logger.info(f"Page {page_num + 1}: Found {len(cards)} cards")
-            except Exception as e:
-                logger.error(f"Page {page_num + 1} error: {e}")
-                page_results.append({
-                    "page": page_num + 1,
-                    "cards_found": 0,
-                    "status": "error",
-                    "error": str(e)
-                })
+        # Create job
+        job_id = str(uuid.uuid4())[:8]
+        batch_jobs[job_id] = {
+            "status": "queued",
+            "progress": 0,
+            "total_pages": total_pages,
+            "current_page": 0,
+            "contacts": [],
+            "page_results": [],
+            "error": None
+        }
         
-        pdf_document.close()
+        # Start background processing
+        background_tasks.add_task(process_batch_pdf_async, job_id, pdf_bytes)
+        
+        logger.info(f"Started batch job {job_id} with {total_pages} pages")
         
         return {
-            "total_pages": len(pdf_document),
-            "contacts": all_contacts,
-            "page_results": page_results
+            "job_id": job_id,
+            "status": "queued",
+            "total_pages": total_pages,
+            "message": f"Processing {total_pages} pages. Poll /api/scan/batch/{job_id} for status."
         }
+        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Batch scan error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/scan/batch/{job_id}")
+async def get_batch_status(job_id: str):
+    """Get status of batch processing job"""
+    if job_id not in batch_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = batch_jobs[job_id]
+    
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "progress": job["progress"],
+        "total_pages": job["total_pages"],
+        "current_page": job["current_page"],
+        "contacts_found": len(job["contacts"]),
+        "contacts": job["contacts"] if job["status"] == "completed" else [],
+        "page_results": job["page_results"],
+        "error": job["error"]
+    }
 
 # ===================
 # ROOT
@@ -242,7 +337,7 @@ async def scan_batch_pdf(file: UploadFile = File(...)):
 
 @api_router.get("/")
 async def root():
-    return {"message": "BizScan Pro API - AI Extraction Only", "version": "3.0.0"}
+    return {"message": "BizScan Pro API - AI Extraction Only", "version": "3.1.0"}
 
 @api_router.get("/health")
 async def health():

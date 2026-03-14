@@ -24,15 +24,19 @@ const BatchScanPage = () => {
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [jobId, setJobId] = useState(null);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [statusMessage, setStatusMessage] = useState("");
 
   if (!currentProject) {
     return (
       <PageTransition>
         <Header title="Batch Scan" showBack />
         <main className="p-4 text-center py-16">
-          <p className="text-muted-foreground mb-4">Please select a project first</p>
+          <p className="text-muted-foreground mb-4">Seleziona prima un progetto</p>
           <Button onClick={() => navigate("/")} className="rounded-full">
-            Go to Projects
+            Vai ai Progetti
           </Button>
         </main>
       </PageTransition>
@@ -44,13 +48,13 @@ const BatchScanPage = () => {
     if (!selectedFile) return;
 
     if (!selectedFile.name.toLowerCase().endsWith('.pdf')) {
-      toast.error("Please select a PDF file");
+      toast.error("Seleziona un file PDF");
       return;
     }
 
     // Check size (max 50MB)
     if (selectedFile.size > 50 * 1024 * 1024) {
-      toast.error("PDF file too large (max 50MB)");
+      toast.error("PDF troppo grande (max 50MB)");
       return;
     }
 
@@ -59,35 +63,28 @@ const BatchScanPage = () => {
     setError(null);
   };
 
-  const processPDF = async () => {
-    if (!file) return;
-
-    setProcessing(true);
-    setProgress(10);
-    setError(null);
-
-    const formData = new FormData();
-    formData.append("file", file);
-
+  // Poll job status
+  const pollJobStatus = async (id) => {
     try {
-      // Simulate progress updates
-      const progressInterval = setInterval(() => {
-        setProgress(prev => Math.min(prev + 5, 90));
-      }, 2000);
-
-      // Call backend API for AI extraction only
-      const res = await fetch(`${API}/scan/batch`, {
-        method: "POST",
-        body: formData
-      });
-
-      clearInterval(progressInterval);
-      setProgress(95);
-
-      if (res.ok) {
-        const data = await res.json();
-        
-        // Save all extracted contacts to IndexedDB
+      const res = await fetch(`${API}/scan/batch/${id}`);
+      if (!res.ok) {
+        throw new Error("Errore nel recupero stato");
+      }
+      
+      const data = await res.json();
+      
+      setProgress(data.progress);
+      setCurrentPage(data.current_page);
+      setTotalPages(data.total_pages);
+      
+      if (data.status === "processing") {
+        setStatusMessage(`Elaborazione pagina ${data.current_page} di ${data.total_pages}...`);
+      } else if (data.status === "queued") {
+        setStatusMessage("In coda...");
+      }
+      
+      if (data.status === "completed") {
+        // Save all contacts to IndexedDB
         let contactsCreated = 0;
         let needsReview = 0;
         
@@ -126,7 +123,6 @@ const BatchScanPage = () => {
           contactsCreated++;
           if ((extractedCard.confidence_score || 0) < 80) needsReview++;
           
-          // Save company if present
           if (extractedCard.company_name_display || extractedCard.brand_name) {
             await db.createCompany(currentProject.id, {
               legal_company_name: extractedCard.legal_company_name || '',
@@ -142,26 +138,77 @@ const BatchScanPage = () => {
           }
         }
 
-        setProgress(100);
         setResult({
-          total_pages: data.total_pages || 1,
-          total_cards_found: data.contacts?.length || 0,
+          total_pages: data.total_pages,
+          total_cards_found: data.contacts_found,
           contacts_created: contactsCreated,
           needs_review: needsReview,
           page_results: data.page_results || []
         });
-        toast.success(`Found ${data.contacts?.length || 0} business cards!`);
+        setProcessing(false);
+        setStatusMessage("");
+        toast.success(`Trovati ${data.contacts_found} biglietti da visita!`);
+        return true; // Stop polling
+        
+      } else if (data.status === "failed") {
+        setError(data.error || "Elaborazione fallita");
+        setProcessing(false);
+        toast.error(data.error || "Elaborazione fallita");
+        return true; // Stop polling
+      }
+      
+      return false; // Continue polling
+    } catch (e) {
+      console.error("Poll error:", e);
+      return false; // Continue polling
+    }
+  };
+
+  const processPDF = async () => {
+    if (!file) return;
+
+    setProcessing(true);
+    setProgress(5);
+    setError(null);
+    setStatusMessage("Caricamento PDF...");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      // Start the job
+      const res = await fetch(`${API}/scan/batch`, {
+        method: "POST",
+        body: formData
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const id = data.job_id;
+        setJobId(id);
+        setTotalPages(data.total_pages);
+        setStatusMessage(`Avviata elaborazione di ${data.total_pages} pagine...`);
+        toast.info(`Elaborazione ${data.total_pages} pagine. Attendere...`);
+        
+        // Start polling
+        const pollInterval = setInterval(async () => {
+          const done = await pollJobStatus(id);
+          if (done) {
+            clearInterval(pollInterval);
+          }
+        }, 2000); // Poll every 2 seconds
+        
       } else {
         const errorData = await res.json();
-        setError(errorData.detail || "Processing failed");
-        toast.error(errorData.detail || "Processing failed");
+        setError(errorData.detail || "Errore nell'avvio elaborazione");
+        setProcessing(false);
+        toast.error(errorData.detail || "Errore nell'avvio elaborazione");
       }
     } catch (e) {
       console.error("Batch processing error:", e);
-      setError("Failed to process PDF. Please try again.");
-      toast.error("Failed to process PDF");
-    } finally {
+      setError("Impossibile elaborare il PDF. Riprova.");
       setProcessing(false);
+      toast.error("Impossibile elaborare il PDF");
     }
   };
 
@@ -170,6 +217,10 @@ const BatchScanPage = () => {
     setResult(null);
     setError(null);
     setProgress(0);
+    setJobId(null);
+    setCurrentPage(0);
+    setTotalPages(0);
+    setStatusMessage("");
   };
 
   const formatFileSize = (bytes) => {
@@ -180,13 +231,13 @@ const BatchScanPage = () => {
 
   return (
     <PageTransition>
-      <Header title="Batch PDF Scan" showBack />
+      <Header title="Scansione PDF Batch" showBack />
 
       <main className="p-4 max-w-2xl mx-auto">
         {/* Project Info */}
         <div className="text-center mb-6">
           <p className="text-sm text-muted-foreground">
-            Processing for: <span className="font-medium text-foreground">{currentProject.name}</span>
+            Progetto: <span className="font-medium text-foreground">{currentProject.name}</span>
           </p>
         </div>
 
@@ -196,10 +247,10 @@ const BatchScanPage = () => {
             <div className="flex gap-3">
               <FileText className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
               <div>
-                <h4 className="font-medium text-sm">Batch Processing Mode</h4>
+                <h4 className="font-medium text-sm">Modalità Elaborazione Batch</h4>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Upload a PDF with multiple business cards per page (max 10 per page). 
-                  Each page is processed with a single AI call for efficiency.
+                  Carica un PDF con più biglietti da visita per pagina (max 10 per pagina).
+                  Ogni pagina viene elaborata con una singola chiamata AI.
                 </p>
               </div>
             </div>
@@ -218,17 +269,17 @@ const BatchScanPage = () => {
                 <FileText className="h-8 w-8 text-muted-foreground" />
               </div>
               <h3 className="font-semibold font-['Manrope'] text-lg mb-2">
-                Upload PDF with Business Cards
+                Carica PDF con Biglietti da Visita
               </h3>
               <p className="text-sm text-muted-foreground mb-4 max-w-xs mx-auto">
-                Supports multi-page PDFs with up to 10 business cards per page
+                Supporta PDF multi-pagina con fino a 10 biglietti per pagina
               </p>
               <Button className="rounded-full" data-testid="select-pdf-btn">
                 <Upload className="h-4 w-4 mr-2" />
-                Select PDF File
+                Seleziona File PDF
               </Button>
               <p className="text-xs text-muted-foreground mt-4">
-                Maximum file size: 50MB
+                Dimensione massima: 50MB
               </p>
             </CardContent>
           </Card>
@@ -266,13 +317,17 @@ const BatchScanPage = () => {
                 {processing && (
                   <div className="mt-4">
                     <div className="flex items-center justify-between text-sm mb-2">
-                      <span className="text-muted-foreground">Processing PDF...</span>
+                      <span className="text-muted-foreground">
+                        {statusMessage || "Elaborazione PDF..."}
+                      </span>
                       <span className="font-medium">{progress}%</span>
                     </div>
                     <Progress value={progress} className="h-2" />
-                    <p className="text-xs text-muted-foreground mt-2 text-center">
-                      Extracting business cards from each page...
-                    </p>
+                    {totalPages > 0 && (
+                      <p className="text-xs text-muted-foreground mt-2 text-center">
+                        Pagina {currentPage} di {totalPages}
+                      </p>
+                    )}
                   </div>
                 )}
               </CardContent>
@@ -285,7 +340,7 @@ const BatchScanPage = () => {
                 data-testid="process-pdf-btn"
               >
                 <Loader2 className="h-5 w-5 mr-2" />
-                Process PDF
+                Elabora PDF
               </Button>
             )}
 
@@ -295,7 +350,7 @@ const BatchScanPage = () => {
                 className="w-full h-14 rounded-full font-semibold text-base"
               >
                 <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                Processing... Please wait
+                Elaborazione in corso... Attendere
               </Button>
             )}
           </motion.div>
@@ -340,7 +395,7 @@ const BatchScanPage = () => {
                   <Check className="h-8 w-8 text-green-600" />
                 </div>
                 <h3 className="font-semibold font-['Manrope'] text-xl mb-2">
-                  Batch Processing Complete!
+                  Elaborazione Completata!
                 </h3>
                 <p className="text-sm text-muted-foreground mb-6">
                   {file?.name}
@@ -350,26 +405,26 @@ const BatchScanPage = () => {
                 <div className="grid grid-cols-2 gap-3 max-w-xs mx-auto mb-6">
                   <div className="p-3 bg-white dark:bg-gray-800 rounded-xl">
                     <div className="text-2xl font-bold text-primary">{result.total_pages}</div>
-                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Pages</div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Pagine</div>
                   </div>
                   <div className="p-3 bg-white dark:bg-gray-800 rounded-xl">
                     <div className="text-2xl font-bold text-green-600">{result.total_cards_found}</div>
-                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Cards Found</div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Biglietti</div>
                   </div>
                   <div className="p-3 bg-white dark:bg-gray-800 rounded-xl">
                     <div className="text-2xl font-bold text-blue-600">{result.contacts_created}</div>
-                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Contacts</div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Contatti</div>
                   </div>
                   <div className="p-3 bg-white dark:bg-gray-800 rounded-xl">
                     <div className="text-2xl font-bold text-yellow-600">{result.needs_review}</div>
-                    <div className="text-xs text-muted-foreground uppercase tracking-widest">To Review</div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-widest">Da Revisare</div>
                   </div>
                 </div>
 
                 {/* Page Details */}
                 {result.page_results && result.page_results.length > 0 && (
                   <div className="text-left">
-                    <h4 className="text-sm font-medium mb-2">Page Details</h4>
+                    <h4 className="text-sm font-medium mb-2">Dettagli Pagine</h4>
                     <ScrollArea className="h-32">
                       <div className="space-y-1">
                         {result.page_results.map((page, i) => (
@@ -377,9 +432,9 @@ const BatchScanPage = () => {
                             key={i} 
                             className="flex items-center justify-between text-sm p-2 bg-white dark:bg-gray-800 rounded"
                           >
-                            <span>Page {page.page}</span>
+                            <span>Pagina {page.page}</span>
                             <div className="flex items-center gap-2">
-                              <span className="text-muted-foreground">{page.cards_found} cards</span>
+                              <span className="text-muted-foreground">{page.cards_found} biglietti</span>
                               {page.status === "success" ? (
                                 <Check className="h-4 w-4 text-green-600" />
                               ) : (
