@@ -1,6 +1,6 @@
 # HANDOFF — Business Card Reader
 
-Ultimo aggiornamento: 27 luglio 2026
+Ultimo aggiornamento: 27 luglio 2026 (seconda sessione)
 Chat successiva suggerita: **"business card reader"**
 
 ---
@@ -36,21 +36,14 @@ Cosa e' cambiato:
 
 ---
 
-## Rischio aperto e urgente: i biglietti gia' scansionati
+## Rischio chiuso: i biglietti gia' scansionati
 
-Non esiste **nessuna copia sul server**. Tutti i contatti gia' scansionati
-vivono in **IndexedDB dentro il browser** che Michele ha usato (database
-`BizScanPro`), legati all'indirizzo web da cui apriva l'app.
+**Michele ha esportato il backup il 27 luglio 2026.** I contatti scansionati
+non vivono piu' solo in IndexedDB (`BizScanPro`) dentro un browser.
 
-Se si puliscono i dati di navigazione, spariscono.
-
-**Prima cosa da fare, prima di qualunque sviluppo**: aprire l'app dallo stesso
-browser/dispositivo, pagina **Backup**, esportare il JSON completo (progetti,
-contatti, aziende, impostazioni). L'export CSV della pagina Export perde le
-relazioni ed e' un ripiego.
-
-Domanda ancora senza risposta: **da quale dispositivo/browser ha scansionato,
-e l'app e' ancora raggiungibile da qualche parte?**
+Resta da fare, ma senza urgenza: reimportare quel JSON nel CRM come progetto di
+scansione con le relative schede. Sono contatti gia' estratti, quindi entrano
+come schede in stato "letta" senza immagine, non come biglietti da leggere.
 
 ---
 
@@ -130,19 +123,70 @@ divergere. Va ridotto a: **progetti, fotocamera, coda di invio**.
 
 ---
 
+## Stato: cosa e' gia' costruito lato CRM
+
+Passi 1, 2 e 3 fatti e pushati su `main` (commit `a0d7fa54e`, `5a938cf19`,
+`d62ac907d` nel repo Experviser_Crm).
+
+**1. Tabelle** — `migrations/20260727_scan_projects_cards.sql`, agganciata allo
+`startCommand` di Render, additiva e transazionale.
+
+- `scan_projects`: nome, data evento, luogo, note. `client_key` unica per
+  utente: il progetto puo' nascere offline e il primo invio fa upsert.
+- `scan_cards`: `idempotency_key` unica per utente (un reinvio con due tacche
+  non crea doppioni), immagine su `crm_files`, output del modello per intero,
+  `confidence`, ciclo `uploaded → extracting → read | needs_review → converted |
+  discarded | error`, piu' `captured_at` separato da `created_at` (la data e'
+  quella dello scatto, non quella di arrivo).
+- Le colonne `converted_contact_id/company_id/lead_id` sono registrate nel
+  motore di identita': se il record creato viene fuso, la scheda lo segue.
+
+**2. Endpoint push** — `server/routes/scans.ts`, montato su `/api/scans` con
+`authenticate`.
+
+| Rotta | Cosa fa |
+| --- | --- |
+| `POST /api/scans/projects` | crea o restituisce il progetto per `clientKey`; non sovrascrive uno esistente |
+| `POST /api/scans/cards` | multipart `front` (+ `back`); reinvio con la stessa `idempotencyKey` → 200 con la scheda esistente, nuova → 201 |
+| `POST /api/scans/cards/known` | il telefono manda le chiavi che crede spedite, riceve quelle davvero arrivate |
+| `GET /api/scans/projects` | elenco con contatori per stato |
+| `GET /api/scans/projects/:id/cards` | schede del progetto |
+
+`CrmFileService.storeUnlinked` archivia l'immagine senza collegarla a nessuna
+entita': diventa file di un contatto solo se e quando la scheda viene convertita.
+
+**3. Estrazione server-side** — `server/modules/scans/ScanExtractionService.ts`.
+Prompt e schema presi da `backend/server.py`, con un solo elenco di campi.
+Output strutturato, `effort: low`, modello da `SCAN_EXTRACTION_MODEL` (default
+`claude-sonnet-5`). Sotto soglia di affidabilita' la scheda resta
+"da verificare". Rotte: `POST /api/scans/cards/:id/extract` (con `force` per
+rileggere) e `POST /api/scans/projects/:id/extract`.
+
+### NON verificato
+
+Nessuna delle rotte e' stata provata contro il DB o contro Anthropic: il
+checkout Desktop ha il database disattivato. Compila, i test unitari passano,
+lo schema e la migrazione sono coerenti — ma il giro completo va provato su
+Render dopo il deploy.
+
+---
+
 ## Prossimo passo concreto
 
-Lato CRM, in quest'ordine:
-
-1. tabelle progetti scansione + schede;
-2. endpoint di ricezione push con chiave di idempotenza e archiviazione
-   immagine (riusare `CrmFileService`);
-3. estrazione server-side (riusare il prompt e lo schema gia' scritti in
-   `backend/server.py`, che sono buoni);
-4. UI sezione Scansioni con revisione e conversione via motore di identita';
-5. riduzione dello scanner a client di cattura.
-
-Poi, separatamente: recupero dei biglietti gia' scansionati dal backup JSON.
+1. **Provare il giro su Render**: creare un progetto, spingere una foto,
+   lanciare l'estrazione, guardare cosa torna. E' la prima cosa da fare.
+2. **UI sezione Scansioni**: elenco progetti, revisione scheda con immagine
+   accanto ai campi, conversione. La conversione deve passare dal motore di
+   identita' (`docs/unified-identity-ownership-engine.md`), mai inserimento
+   diretto: da una fiera si portano a casa 40 duplicati. Default suggerito:
+   **lead**.
+3. **Worker automatico di lettura**: oggi l'estrazione parte solo su richiesta
+   esplicita. Serve un worker con tetto e cadenza, sul modello degli altri
+   worker del CRM — mai una chiamata al modello per riga di elenco.
+4. **Ridurre lo scanner a client di cattura**: progetti, fotocamera, coda di
+   invio. Contatti, Aziende, Duplicati ed Export diventano un doppione
+   destinato a divergere.
+5. **Reimportare il backup JSON** dei biglietti gia' scansionati.
 
 ---
 
