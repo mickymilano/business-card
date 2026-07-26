@@ -14,7 +14,7 @@ import io
 import asyncio
 import fitz  # PyMuPDF for PDF processing
 from PIL import Image as PILImage
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+from anthropic import AsyncAnthropic
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -45,121 +45,136 @@ class ScanRequest(BaseModel):
 # AI HELPERS
 # ===================
 
-def get_api_key():
-    return os.environ.get('EMERGENT_LLM_KEY', '')
+# Estrazione via SDK Anthropic ufficiale.
+#
+# Migrazione del 27/07/2026: prima si passava da `emergentintegrations`, la
+# libreria del generatore con cui l'app era nata, e da una chiave
+# EMERGENT_LLM_KEY. Ora si parla direttamente con Anthropic: nessun
+# intermediario, chiave nostra, modello che scegliamo noi.
+#
+# Cambio sostanziale oltre al fornitore: si usa l'output strutturato, quindi
+# il modello NON puo' rispondere fuori schema. Sparisce l'analisi fragile che
+# tagliava i recinti markdown a mano (`response_text.split("```")`), che si
+# rompeva ogni volta che il modello aggiungeva una frase di cortesia.
+
+MODEL_ID = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-5')
+
+# Campi estratti da un biglietto. Tutti opzionali nei fatti (un biglietto puo'
+# non avere il reparto), quindi ammettono null: lo schema li dichiara comunque
+# tutti obbligatori perche' l'output strutturato lo richiede, ed e' meglio un
+# null esplicito di una chiave assente da gestire a valle.
+_CARD_STRING_FIELDS = [
+    'first_name', 'middle_name', 'last_name', 'full_name_original',
+    'job_title', 'department',
+    'mobile_phone', 'direct_phone', 'office_phone',
+    'primary_email', 'secondary_email',
+    'linkedin_url', 'personal_website',
+    'company_name_display', 'brand_name', 'legal_company_name', 'website',
+    'address', 'postal_code', 'country',
+    'industry', 'ai_notes',
+]
+
+CARD_SCHEMA: Dict[str, Any] = {
+    'type': 'object',
+    'additionalProperties': False,
+    'properties': {
+        **{name: {'type': ['string', 'null']} for name in _CARD_STRING_FIELDS},
+        'confidence_score': {'type': 'integer'},
+    },
+    'required': [*_CARD_STRING_FIELDS, 'confidence_score'],
+}
+
+CARDS_SCHEMA: Dict[str, Any] = {
+    'type': 'object',
+    'additionalProperties': False,
+    'properties': {'cards': {'type': 'array', 'items': CARD_SCHEMA}},
+    'required': ['cards'],
+}
+
+SYSTEM_PROMPT = """You are an expert at reading and extracting structured data from business cards in any language.
+
+Field rules:
+- address: street, number, city and province on one line.
+- postal_code: only the ZIP/CAP code.
+- confidence_score: 0-100, how confident you are in the extraction as a whole.
+- ai_notes: anything a human should know (unreadable field, ambiguous name order, handwriting).
+
+Never invent data. If a field is not visible on the card, set it to null."""
+
+_client: Optional[AsyncAnthropic] = None
+
+
+def get_client() -> AsyncAnthropic:
+    """Client Anthropic condiviso. La chiave arriva da ANTHROPIC_API_KEY."""
+    global _client
+    if _client is None:
+        if not os.environ.get('ANTHROPIC_API_KEY'):
+            raise HTTPException(
+                status_code=400,
+                detail="ANTHROPIC_API_KEY non configurata: impostala nel .env del backend.",
+            )
+        _client = AsyncAnthropic()
+    return _client
+
+
+def _image_block(image_base64: str) -> Dict[str, Any]:
+    """Blocco immagine per l'API. Il frontend comprime in JPEG e invia il solo
+    base64, ma accettiamo anche un data URL completo per robustezza."""
+    data = image_base64
+    media_type = 'image/jpeg'
+    if data.startswith('data:'):
+        header, _, payload = data.partition(',')
+        data = payload
+        if ';' in header and ':' in header:
+            media_type = header.split(':', 1)[1].split(';', 1)[0] or media_type
+    return {'type': 'image', 'source': {'type': 'base64', 'media_type': media_type, 'data': data}}
+
+
+async def _extract(content: List[Dict[str, Any]], schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Una sola chiamata al modello, vincolata allo schema. Restituisce
+    l'oggetto gia' validato: nessuna analisi manuale del testo."""
+    try:
+        response = await get_client().messages.create(
+            model=MODEL_ID,
+            max_tokens=8000,
+            system=SYSTEM_PROMPT,
+            # Estrazione, non ragionamento: effort basso tiene bassi costo e
+            # latenza senza perdere qualita' su un compito di lettura.
+            output_config={'effort': 'low', 'format': {'type': 'json_schema', 'schema': schema}},
+            messages=[{'role': 'user', 'content': content}],
+        )
+    except Exception as e:
+        logger.error(f"Anthropic API error: {e}")
+        raise HTTPException(status_code=502, detail=f"AI extraction failed: {e}")
+
+    if response.stop_reason == 'refusal':
+        raise HTTPException(status_code=422, detail="Il modello ha rifiutato di elaborare questa immagine.")
+
+    text = next((block.text for block in response.content if block.type == 'text'), '')
+    if not text:
+        raise HTTPException(status_code=502, detail="Risposta vuota dal modello.")
+    return json.loads(text)
+
 
 async def extract_business_card_data(image_base64: str, image_back_base64: Optional[str] = None) -> Dict[str, Any]:
-    """Extract data from business card image using Claude"""
-    api_key = get_api_key()
-    model = 'claude-sonnet-4-5-20250929'
-    
-    if not api_key:
-        raise HTTPException(status_code=400, detail="No API key configured")
-    
-    system_prompt = """You are an expert at reading and extracting structured data from business cards in any language.
-    Extract all visible information and return it as a JSON object with these fields:
-
-    PERSONAL INFO:
-    - first_name, middle_name, last_name, full_name_original
-    
-    PROFESSIONAL INFO:
-    - job_title, department
-    
-    CONTACT INFO:
-    - mobile_phone, direct_phone, office_phone
-    - primary_email, secondary_email
-    - linkedin_url, personal_website
-    
-    COMPANY INFO:
-    - company_name_display, brand_name, legal_company_name, website
-    
-    ADDRESS INFO:
-    - address (street, number, city, province in one line)
-    - postal_code (only ZIP/CAP code)
-    - country
-    
-    METADATA:
-    - industry, confidence_score (0-100), ai_notes
-    
-    Return ONLY valid JSON, no markdown."""
-    
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"scan-{str(uuid.uuid4())}",
-        system_message=system_prompt
-    ).with_model("anthropic", model)
-    
-    images = [ImageContent(image_base64=image_base64)]
+    """Estrae i dati di UN biglietto (fronte, e retro se presente)."""
+    content: List[Dict[str, Any]] = [_image_block(image_base64)]
     prompt = "Extract all contact and company information from this business card."
-    
     if image_back_base64:
-        images.append(ImageContent(image_base64=image_back_base64))
-        prompt = "Extract all information from both sides of this business card."
-    
-    user_message = UserMessage(text=prompt, file_contents=images)
-    
-    try:
-        response = await chat.send_message(user_message)
-        response_text = response.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-        return json.loads(response_text.strip())
-    except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        raise HTTPException(status_code=500, detail=f"AI extraction failed: {str(e)}")
+        content.append(_image_block(image_back_base64))
+        prompt = "Extract all information from both sides of this business card. It is one single card."
+    content.append({'type': 'text', 'text': prompt})
+    return await _extract(content, CARD_SCHEMA)
+
 
 async def extract_multiple_cards(image_base64: str) -> List[Dict[str, Any]]:
-    """Extract data from multiple business cards in a single image"""
-    api_key = get_api_key()
-    model = 'claude-sonnet-4-5-20250929'
-    
-    if not api_key:
-        raise HTTPException(status_code=400, detail="No API key configured")
-    
-    system_prompt = """You are an expert at reading and extracting structured data from business cards in any language.
-    This image may contain MULTIPLE business cards. Extract ALL visible business cards.
-    
-    Return a JSON array of cards, each with these fields:
-    - first_name, middle_name, last_name, full_name_original
-    - job_title, department
-    - mobile_phone, direct_phone, office_phone
-    - primary_email, secondary_email
-    - linkedin_url, personal_website
-    - company_name_display, brand_name, legal_company_name, website
-    - address, postal_code, country
-    - industry, confidence_score (0-100), ai_notes
-    
-    Return ONLY valid JSON array, no markdown. Example: [{"first_name": "John", ...}, {"first_name": "Jane", ...}]"""
-    
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"batch-{str(uuid.uuid4())}",
-        system_message=system_prompt
-    ).with_model("anthropic", model)
-    
-    user_message = UserMessage(
-        text="Extract ALL business cards from this image. Return a JSON array.",
-        file_contents=[ImageContent(image_base64=image_base64)]
-    )
-    
-    try:
-        response = await chat.send_message(user_message)
-        response_text = response.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-        
-        result = json.loads(response_text.strip())
-        # Ensure it's always a list
-        if isinstance(result, dict):
-            return [result]
-        return result
-    except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        raise HTTPException(status_code=500, detail=f"AI extraction failed: {str(e)}")
+    """Estrae TUTTI i biglietti presenti in una sola immagine (pagina PDF)."""
+    content: List[Dict[str, Any]] = [
+        _image_block(image_base64),
+        {'type': 'text', 'text': "This image may contain MULTIPLE business cards. Extract every card you can see."},
+    ]
+    result = await _extract(content, CARDS_SCHEMA)
+    return result.get('cards', [])
 
 # ===================
 # BACKGROUND TASK FOR BATCH PROCESSING
